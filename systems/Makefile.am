@@ -30,6 +30,12 @@ else
 FBDEV_DIR =
 endif
 
+if STMFBDEV_CORE
+STMFBDEV_DIR = stmfbdev
+else
+STMFBDEV_DIR =
+endif
+
 if VNC_CORE
 VNC_DIR = vnc
 else
@@ -41,6 +47,7 @@ SUBDIRS = \
 	dummy \
 	$(DEVMEM_DIR) \
 	$(FBDEV_DIR) \
+	$(STMFBDEV_DIR) \
 	$(X11_DIR) \
 	$(SDL_DIR) \
 	$(OSX_DIR) \

@@ -357,7 +357,7 @@ IDirectFBSurface_GetPalette( IDirectFBSurface  *thiz,
 
      DIRECT_ALLOCATE_INTERFACE( palette, IDirectFBPalette );
 
-     ret = IDirectFBPalette_Construct( palette, surface->palette );
+     ret = IDirectFBPalette_Construct( palette, surface->palette, data->core );
      if (ret)
           return ret;
 
@@ -695,6 +695,7 @@ IDirectFBSurface_Clear( IDirectFBSurface *thiz,
      DIRECT_INTERFACE_GET_DATA(IDirectFBSurface)
 
      D_DEBUG_AT( Surface, "%s( %p, 0x%08x )\n", __FUNCTION__, thiz, PIXEL_ARGB(a,r,g,b) );
+     D_DEBUG_AT( Surface, "  ->      %4d,%4d-%4dx%4d\n", DFB_RECTANGLE_VALS(&data->area.current) );
 
      surface = data->surface;
      if (!surface)
@@ -1738,13 +1739,13 @@ IDirectFBSurface_Blit( IDirectFBSurface   *thiz,
 {
      DFBRectangle srect;
      IDirectFBSurface_data *src_data;
+     const DFBRectangle    *cur_area;
+     DFBRectangle           temp;
+     int                    scaled_one;
 
      DIRECT_INTERFACE_GET_DATA(IDirectFBSurface)
 
      D_DEBUG_AT( Surface, "%s( %p )\n", __FUNCTION__, thiz );
-
-     if (sr)
-          D_DEBUG_AT( Surface, "  -> [%2d] %4d,%4d-%4dx%4d <- %4d,%4d\n", 0, dx, dy, sr->w, sr->h, sr->x, sr->y );
 
      if (!data->surface)
           return DFB_DESTROYED;
@@ -1764,26 +1765,51 @@ IDirectFBSurface_Blit( IDirectFBSurface   *thiz,
      if (!src_data->area.current.w || !src_data->area.current.h)
           return DFB_INVAREA;
 
+     int x_wanted = data->area.wanted.x;
+     int y_wanted = data->area.wanted.y;
+     int x_wanted_src = src_data->area.wanted.x;
+     int y_wanted_src = src_data->area.wanted.y;
+     if (!(data->state.blittingflags & DSBLIT_FIXEDPOINT)) {
+          cur_area = &src_data->area.current;
+
+          scaled_one = 1;
+     }
+     else {
+          temp.x = DFB_FIXED_POINT_VAL( src_data->area.current.x );
+          temp.y = DFB_FIXED_POINT_VAL( src_data->area.current.y );
+          temp.w = DFB_FIXED_POINT_VAL( src_data->area.current.w );
+          temp.h = DFB_FIXED_POINT_VAL( src_data->area.current.h );
+          cur_area = &temp;
+
+          x_wanted *= DFB_FIXED_POINT_ONE;
+          y_wanted *= DFB_FIXED_POINT_ONE;
+
+          x_wanted_src *= DFB_FIXED_POINT_ONE;
+          y_wanted_src *= DFB_FIXED_POINT_ONE;
+
+          scaled_one = DFB_FIXED_POINT_ONE;
+     }
+
      if (sr) {
-          if (sr->w < 1  ||  sr->h < 1)
+          if (sr->w < scaled_one || sr->h < scaled_one)
                return DFB_OK;
 
           srect = *sr;
 
-          srect.x += src_data->area.wanted.x;
-          srect.y += src_data->area.wanted.y;
+          srect.x += x_wanted_src;
+          srect.y += y_wanted_src;
 
-          if (!dfb_rectangle_intersect( &srect, &src_data->area.current ))
+          if (!dfb_rectangle_intersect( &srect, cur_area ))
                return DFB_INVAREA;
 
-          dx += srect.x - (sr->x + src_data->area.wanted.x);
-          dy += srect.y - (sr->y + src_data->area.wanted.y);
+          dx += srect.x - (sr->x + x_wanted_src);
+          dy += srect.y - (sr->y + y_wanted_src);
      }
      else {
-          srect = src_data->area.current;
+          srect = *cur_area;
 
-          dx += srect.x - src_data->area.wanted.x;
-          dy += srect.y - src_data->area.wanted.y;
+          dx += srect.x - x_wanted_src;
+          dy += srect.y - y_wanted_src;
      }
 
      dfb_state_set_source( &data->state, src_data->surface );
@@ -1792,9 +1818,18 @@ IDirectFBSurface_Blit( IDirectFBSurface   *thiz,
      if (data->state.blittingflags & DSBLIT_SRC_COLORKEY)
           dfb_state_set_src_colorkey( &data->state, src_data->src_key.value );
 
-     dfb_gfxcard_blit( &srect,
-                       data->area.wanted.x + dx,
-                       data->area.wanted.y + dy, &data->state );
+     if (!(data->state.blittingflags & DSBLIT_FIXEDPOINT))
+          D_DEBUG_AT( Surface, "  -> [%2d] %4d,%4d-%4dx%4d <- %4d,%4d\n",
+                      0, x_wanted + dx, y_wanted + dy, srect.w, srect.h,
+                      srect.x, srect.y );
+     else
+          D_DEBUG_AT( Surface, "  -> [%2d] %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d <- %4d.%06d,%4d.%06d\n",
+                      0,
+                      DFB_INT_VALf( x_wanted + dx ), DFB_INT_VALf( y_wanted + dy ),
+                      DFB_INT_VALf( srect.w ), DFB_INT_VALf( srect.h ),
+                      DFB_INT_VALf( srect.x ), DFB_INT_VALf( srect.y ) );
+
+     dfb_gfxcard_blit( &srect, x_wanted + dx, y_wanted + dy, &data->state );
 
      return DFB_OK;
 }
@@ -1807,13 +1842,27 @@ IDirectFBSurface_TileBlit( IDirectFBSurface   *thiz,
 {
      DFBRectangle srect;
      IDirectFBSurface_data *src_data;
+     const DFBRectangle    *scaled_wanted;
+     DFBRectangle           temp;
+     int                    scaled_one;
+     int                    x_wanted_src;
+     int                    y_wanted_src;
 
      DIRECT_INTERFACE_GET_DATA(IDirectFBSurface)
 
      D_DEBUG_AT( Surface, "%s( %p )\n", __FUNCTION__, thiz );
 
-     if (sr)
-          D_DEBUG_AT( Surface, "  -> [%2d] %4d,%4d-%4dx%4d <- %4d,%4d\n", 0, dx, dy, sr->w, sr->h, sr->x, sr->y );
+     if (sr) {
+          if (!(data->state.blittingflags & DSBLIT_FIXEDPOINT))
+               D_DEBUG_AT( Surface, "  -> [%2d] %4d,%4d-%4dx%4d <- %4d,%4d\n",
+                           0, dx, dy, sr->w, sr->h, sr->x, sr->y );
+          else
+               D_DEBUG_AT( Surface, "  -> [%2d] %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d <- %4d.%06d,%4d.%06d\n",
+                           0,
+                           DFB_INT_VALf( dx ), DFB_INT_VALf( dy ),
+                           DFB_INT_VALf( sr->w ), DFB_INT_VALf( sr->h ),
+                           DFB_INT_VALf( sr->x ), DFB_INT_VALf( sr->y ) );
+     }
 
      if (!data->surface)
           return DFB_DESTROYED;
@@ -1835,26 +1884,63 @@ IDirectFBSurface_TileBlit( IDirectFBSurface   *thiz,
           return DFB_INVAREA;
 
 
+     if (!(data->state.blittingflags & DSBLIT_FIXEDPOINT)) {
+          scaled_wanted = &data->area.wanted;
+
+          x_wanted_src = src_data->area.wanted.x;
+          y_wanted_src = src_data->area.wanted.y;
+
+          scaled_one = 1;
+     }
+     else {
+          temp.x = DFB_FIXED_POINT_VAL( data->area.wanted.x );
+          temp.y = DFB_FIXED_POINT_VAL( data->area.wanted.y );
+          temp.w = DFB_FIXED_POINT_VAL( data->area.wanted.w );
+          temp.h = DFB_FIXED_POINT_VAL( data->area.wanted.h );
+          scaled_wanted = &temp;
+
+          x_wanted_src = DFB_FIXED_POINT_VAL( src_data->area.wanted.x );
+          y_wanted_src = DFB_FIXED_POINT_VAL( src_data->area.wanted.y );
+
+          scaled_one = DFB_FIXED_POINT_ONE;
+     }
+
      if (sr) {
-          if (sr->w < 1  ||  sr->h < 1)
-               return DFB_OK;
+          if (sr->w < scaled_one || sr->h < scaled_one)
+                    return DFB_OK;
 
           srect = *sr;
 
-          srect.x += src_data->area.wanted.x;
-          srect.y += src_data->area.wanted.y;
+          srect.x += x_wanted_src;
+          srect.y += y_wanted_src;
 
-          if (!dfb_rectangle_intersect( &srect, &src_data->area.current ))
-               return DFB_INVAREA;
+          if (!(data->state.blittingflags & DSBLIT_FIXEDPOINT)) {
+               if (!dfb_rectangle_intersect( &srect, &src_data->area.current ))
+                    return DFB_INVAREA;
+          }
+          else {
+               DFBRectangle current_src;
 
-          dx += srect.x - (sr->x + src_data->area.wanted.x);
-          dy += srect.y - (sr->y + src_data->area.wanted.y);
+               current_src.x = DFB_FIXED_POINT_VAL( src_data->area.current.x );
+               current_src.y = DFB_FIXED_POINT_VAL( src_data->area.current.y );
+               current_src.w = DFB_FIXED_POINT_VAL( src_data->area.current.w );
+               current_src.h = DFB_FIXED_POINT_VAL( src_data->area.current.h );
+
+               if (!dfb_rectangle_intersect( &srect, &current_src ))
+                    return DFB_INVAREA;
+          }
+
+          dx += srect.x - (sr->x + x_wanted_src);
+          dy += srect.y - (sr->y + y_wanted_src);
      }
      else {
           srect = src_data->area.current;
 
-          dx += srect.x - src_data->area.wanted.x;
-          dy += srect.y - src_data->area.wanted.y;
+          if (data->state.blittingflags & DSBLIT_FIXEDPOINT)
+               dfb_rectangle_upscale( &srect );
+
+          dx += srect.x - x_wanted_src;
+          dy += srect.y - y_wanted_src;
      }
 
      dfb_state_set_source( &data->state, src_data->surface );
@@ -1871,12 +1957,13 @@ IDirectFBSurface_TileBlit( IDirectFBSurface   *thiz,
      if (dy > 0)
           dy -= srect.h;
 
-     dx += data->area.wanted.x;
-     dy += data->area.wanted.y;
+     dx += scaled_wanted->x;
+     dy += scaled_wanted->y;
 
      dfb_gfxcard_tileblit( &srect, dx, dy,
-                           dx + data->area.wanted.w + srect.w - 1,
-                           dy + data->area.wanted.h + srect.h - 1, &data->state );
+                           dx + scaled_wanted->w + srect.w - scaled_one,
+                           dy + scaled_wanted->h + srect.h - scaled_one,
+                           &data->state );
 
      return DFB_OK;
 }
@@ -1892,6 +1979,8 @@ IDirectFBSurface_BatchBlit( IDirectFBSurface   *thiz,
      DFBRectangle          *rects;
      DFBPoint              *points;
      IDirectFBSurface_data *src_data;
+     const DFBRectangle    *scaled_current_src;
+     DFBRectangle           temp;
 
      DIRECT_INTERFACE_GET_DATA(IDirectFBSurface)
 
@@ -1915,11 +2004,28 @@ IDirectFBSurface_BatchBlit( IDirectFBSurface   *thiz,
      if (!src_data->area.current.w || !src_data->area.current.h)
           return DFB_INVAREA;
 
-     dx = data->area.wanted.x;
-     dy = data->area.wanted.y;
+     if (!(data->state.blittingflags & DSBLIT_FIXEDPOINT)) {
+          scaled_current_src = &src_data->area.current;
 
-     sx = src_data->area.wanted.x;
-     sy = src_data->area.wanted.y;
+          dx = data->area.wanted.x;
+          dy = data->area.wanted.y;
+
+          sx = src_data->area.wanted.x;
+          sy = src_data->area.wanted.y;
+     }
+     else {
+          temp.x = DFB_FIXED_POINT_VAL( src_data->area.current.x );
+          temp.y = DFB_FIXED_POINT_VAL( src_data->area.current.y );
+          temp.w = DFB_FIXED_POINT_VAL( src_data->area.current.w );
+          temp.h = DFB_FIXED_POINT_VAL( src_data->area.current.h );
+          scaled_current_src = &temp;
+
+          dx = DFB_FIXED_POINT_VAL( data->area.wanted.x );
+          dy = DFB_FIXED_POINT_VAL( data->area.wanted.y );
+
+          sx = DFB_FIXED_POINT_VAL( src_data->area.wanted.x );
+          sy = DFB_FIXED_POINT_VAL( src_data->area.wanted.y );
+     }
 
      rects  = alloca( sizeof(DFBRectangle) * num );
      points = alloca( sizeof(DFBPoint) * num );
@@ -1934,11 +2040,12 @@ IDirectFBSurface_BatchBlit( IDirectFBSurface   *thiz,
           points[i].x += dx;
           points[i].y += dy;
 
-          if (!dfb_rectangle_intersect( &rects[i], &src_data->area.current ))
+          if (!dfb_rectangle_intersect( &rects[i], scaled_current_src ))
                rects[i].w = rects[i].h = 0;
-
-          points[i].x += rects[i].x - (source_rects[i].x + sx);
-          points[i].y += rects[i].y - (source_rects[i].y + sy);
+          else {
+               points[i].x += rects[i].x - (source_rects[i].x + sx);
+               points[i].y += rects[i].y - (source_rects[i].y + sy);
+          }
      }
 
      dfb_state_set_source( &data->state, src_data->surface );
@@ -2064,18 +2171,78 @@ IDirectFBSurface_BatchBlit2( IDirectFBSurface   *thiz,
      return DFB_OK;
 }
 
-static DFBResult
-IDirectFBSurface_StretchBlit( IDirectFBSurface   *thiz,
-                              IDirectFBSurface   *source,
-                              const DFBRectangle *source_rect,
-                              const DFBRectangle *destination_rect )
+static bool
+clip_StretchBlit( DFBRectangle       * __restrict src,
+                  const DFBRectangle * __restrict current_area_src,
+                  DFBRectangle       * __restrict dst,
+                  bool                fixed_point )
 {
-     DFBRectangle srect, drect;
+     DFBRectangle orig_src = *src;
+
+     if (!dfb_rectangle_intersect( src, current_area_src )) {
+          src->w = src->h = 0;
+          dst->w = dst->h = 0;
+          return false;
+     }
+
+     /* clipping of the source rectangle must be applied to the destination */
+     if (src->x != orig_src.x)
+          dst->x += (int)( (src->x - orig_src.x) *
+                           (dst->w / (float)orig_src.w) + 0.5f);
+
+     if (src->y != orig_src.y)
+          dst->y += (int)( (src->y - orig_src.y) *
+                           (dst->h / (float)orig_src.h) + 0.5f);
+
+     if (src->w != orig_src.w) {
+          dst->w = (dst->w * (src->w / (float)orig_src.w));
+          if (!fixed_point)
+               dst->w = D_ICEIL(dst->w);
+          /* don't round in the fixed point case, as we want to keep the
+             precision */
+     }
+
+     if (src->h != orig_src.h) {
+          dst->h = (int) (dst->h * (src->h / (float)orig_src.h));
+          if (!fixed_point)
+               dst->h = D_ICEIL(dst->h);
+          /* don't round in the fixed point case, as we want to keep the
+             precision */
+     }
+
+     if (!fixed_point)
+          D_DEBUG_AT( Surface, "  -> [%2d] %4d,%4d-%4dx%4d <- %4d,%4d-%4dx%4d\n",
+                      0, dst->x, dst->y, dst->w, dst->h,
+                      src->x, src->y, src->w, src->h );
+     else
+          D_DEBUG_AT( Surface, "  -> [%2d] %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d <- %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d\n",
+                      0,
+                      DFB_INT_VALf( dst->x ), DFB_INT_VALf( dst->y ),
+                      DFB_INT_VALf( dst->w ), DFB_INT_VALf( dst->h ),
+                      DFB_INT_VALf( src->x ), DFB_INT_VALf( src->y ),
+                      DFB_INT_VALf( src->w ), DFB_INT_VALf( src->h ) );
+
+     return true;
+}
+
+static DFBResult
+IDirectFBSurface_BatchStretchBlit( IDirectFBSurface *thiz,
+                                   IDirectFBSurface *source,
+                                   DFBRectangle     *source_rects,
+                                   DFBRectangle     *dest_rects,
+                                   int               num )
+{
      IDirectFBSurface_data *src_data;
+     int                    i;
+     const DFBRectangle    *scaled_current_src;
+     DFBRectangle           temp;
+     int                    scaled_one;
+     int                    sx, sy, dx, dy;
+     bool                   fixed_point;
 
      DIRECT_INTERFACE_GET_DATA(IDirectFBSurface)
 
-     D_DEBUG_AT( Surface, "%s( %p )\n", __FUNCTION__, thiz );
+     D_DEBUG_AT( Surface, "%s( %p, %d )\n", __FUNCTION__, thiz, num );
 
      if (!data->surface)
           return DFB_DESTROYED;
@@ -2087,7 +2254,7 @@ IDirectFBSurface_StretchBlit( IDirectFBSurface   *thiz,
      if (data->locked)
           return DFB_LOCKED;
 
-     if (!source)
+     if (!source || !source_rects || !dest_rects || num < 1)
           return DFB_INVARG;
 
 
@@ -2097,52 +2264,55 @@ IDirectFBSurface_StretchBlit( IDirectFBSurface   *thiz,
           return DFB_INVAREA;
 
 
-     /* do destination rectangle */
-     if (destination_rect) {
-          if (destination_rect->w < 1  ||  destination_rect->h < 1)
+     fixed_point = !!(data->state.blittingflags & DSBLIT_FIXEDPOINT);
+
+     if (!fixed_point) {
+          scaled_one = 1;
+
+          scaled_current_src = &src_data->area.current;
+
+          dx = data->area.wanted.x;
+          dy = data->area.wanted.y;
+
+          sx = src_data->area.wanted.x;
+          sy = src_data->area.wanted.y;
+     }
+     else {
+          scaled_one = DFB_FIXED_POINT_ONE;
+
+          temp.x = DFB_FIXED_POINT_VAL( src_data->area.current.x );
+          temp.y = DFB_FIXED_POINT_VAL( src_data->area.current.y );
+          temp.w = DFB_FIXED_POINT_VAL( src_data->area.current.w );
+          temp.h = DFB_FIXED_POINT_VAL( src_data->area.current.h );
+          scaled_current_src = &temp;
+
+          dx = DFB_FIXED_POINT_VAL( data->area.wanted.x );
+          dy = DFB_FIXED_POINT_VAL( data->area.wanted.y );
+
+          sx = DFB_FIXED_POINT_VAL( src_data->area.wanted.x );
+          sy = DFB_FIXED_POINT_VAL( src_data->area.wanted.y );
+     }
+
+     for (i=0; i<num; i++) {
+          DFBRectangle * __restrict src = &source_rects[i];
+          DFBRectangle * __restrict dst = &dest_rects[i];
+
+          if (dst->w < scaled_one || dst->h < scaled_one) {
+               dst->w = 0;
+               dst->h = 0;
+               continue;
+          }
+
+          if (src->w <= 0 || src->h <= 0)
                return DFB_INVARG;
 
-          drect = *destination_rect;
+          src->x += sx;
+          src->y += sy;
 
-          drect.x += data->area.wanted.x;
-          drect.y += data->area.wanted.y;
-     }
-     else
-          drect = data->area.wanted;
+          dst->x += dx;
+          dst->y += dy;
 
-     /* do source rectangle */
-     if (source_rect) {
-          if (source_rect->w < 1  ||  source_rect->h < 1)
-               return DFB_INVARG;
-
-          srect = *source_rect;
-
-          srect.x += src_data->area.wanted.x;
-          srect.y += src_data->area.wanted.y;
-     }
-     else
-          srect = src_data->area.wanted;
-
-
-     /* clipping of the source rectangle must be applied to the destination */
-     {
-          DFBRectangle orig_src = srect;
-
-          if (!dfb_rectangle_intersect( &srect, &src_data->area.current ))
-               return DFB_INVAREA;
-
-          if (srect.x != orig_src.x)
-               drect.x += (int)( (srect.x - orig_src.x) *
-                                 (drect.w / (float)orig_src.w) + 0.5f);
-
-          if (srect.y != orig_src.y)
-               drect.y += (int)( (srect.y - orig_src.y) *
-                                 (drect.h / (float)orig_src.h) + 0.5f);
-
-          if (srect.w != orig_src.w)
-               drect.w = D_ICEIL(drect.w * (srect.w / (float)orig_src.w));
-          if (srect.h != orig_src.h)
-               drect.h = D_ICEIL(drect.h * (srect.h / (float)orig_src.h));
+          clip_StretchBlit( src, scaled_current_src, dst, fixed_point );
      }
 
      dfb_state_set_source( &data->state, src_data->surface );
@@ -2151,9 +2321,47 @@ IDirectFBSurface_StretchBlit( IDirectFBSurface   *thiz,
      if (data->state.blittingflags & DSBLIT_SRC_COLORKEY)
           dfb_state_set_src_colorkey( &data->state, src_data->src_key.value );
 
-     dfb_gfxcard_stretchblit( &srect, &drect, &data->state );
+     dfb_gfxcard_batchstretchblit( source_rects, dest_rects, num,
+                                   &data->state );
 
      return DFB_OK;
+}
+
+static DFBResult
+IDirectFBSurface_StretchBlit( IDirectFBSurface   *thiz,
+                              IDirectFBSurface   *source,
+                              const DFBRectangle *source_rect,
+                              const DFBRectangle *destination_rect )
+{
+     DFBRectangle srect, drect;
+
+     DIRECT_INTERFACE_GET_DATA(IDirectFBSurface)
+
+     if (destination_rect)
+          drect = *destination_rect;
+     else {
+          if (!(data->state.blittingflags & DSBLIT_FIXEDPOINT))
+               drect = (DFBRectangle) { 0, 0, data->area.wanted.w, data->area.wanted.h };
+          else
+               drect = (DFBRectangle) { 0, 0,
+                                        DFB_FIXED_POINT_VAL( data->area.wanted.w ),
+                                        DFB_FIXED_POINT_VAL( data->area.wanted.h ) };
+     }
+
+     if (source_rect)
+          srect = *source_rect;
+     else {
+          IDirectFBSurface_data *sd = (IDirectFBSurface_data*)source->priv;
+
+          if (!(data->state.blittingflags & DSBLIT_FIXEDPOINT))
+               srect = (DFBRectangle) { 0, 0, sd->area.wanted.w, sd->area.wanted.h };
+          else
+               srect = (DFBRectangle) { 0, 0,
+                                        DFB_FIXED_POINT_VAL( sd->area.wanted.w ),
+                                        DFB_FIXED_POINT_VAL( sd->area.wanted.h ) };
+     }
+
+     return IDirectFBSurface_BatchStretchBlit( thiz, source, &srect, &drect, 1 );
 }
 
 #define SET_VERTEX(v,X,Y,Z,W,S,T)  \
@@ -2285,6 +2493,7 @@ IDirectFBSurface_DrawString( IDirectFBSurface *thiz,
      IDirectFBFont_data *font_data;
      CoreFont           *core_font;
      unsigned int        layers = 1;
+     int                 scaled_one;
 
      DIRECT_INTERFACE_GET_DATA(IDirectFBSurface)
 
@@ -2324,13 +2533,16 @@ IDirectFBSurface_DrawString( IDirectFBSurface *thiz,
           layers = 2;
      }
 
+     scaled_one = ((data->state.blittingflags & DSBLIT_FIXEDPOINT)
+                   ? DFB_FIXED_POINT_ONE : 1);
+
      if (!(flags & DSTF_TOP)) {
-          x += core_font->ascender * core_font->up_unit_x;
-          y += core_font->ascender * core_font->up_unit_y;
+          x += ((int) core_font->ascender * core_font->up_unit_x) * scaled_one;
+          y += ((int) core_font->ascender * core_font->up_unit_y) * scaled_one;
 
           if (flags & DSTF_BOTTOM) {
-               x -= core_font->descender * core_font->up_unit_x;
-               y -= core_font->descender * core_font->up_unit_y;
+               x -= ((int) core_font->descender * core_font->up_unit_x) * scaled_one;
+               y -= ((int) core_font->descender * core_font->up_unit_y) * scaled_one;
           }
      }
 
@@ -2374,17 +2586,18 @@ IDirectFBSurface_DrawString( IDirectFBSurface *thiz,
 
           /* Justify. */
           if (flags & DSTF_RIGHT) {
-               x -= xsize;
-               y -= ysize;
+               x -= (xsize * scaled_one);
+               y -= (ysize * scaled_one);
           }
           else if (flags & DSTF_CENTER) {
-               x -= xsize >> 1;
-               y -= ysize >> 1;
+               x -= (xsize * scaled_one) >> 1;
+               y -= (ysize * scaled_one) >> 1;
           }
      }
 
      dfb_gfxcard_drawstring( (const unsigned char*) text, bytes, data->encoding,
-                             data->area.wanted.x + x, data->area.wanted.y + y,
+                             data->area.wanted.x * scaled_one + x,
+                             data->area.wanted.y * scaled_one + y,
                              core_font, layers, &data->state );
 
      return DFB_OK;
@@ -2403,6 +2616,7 @@ IDirectFBSurface_DrawGlyph( IDirectFBSurface *thiz,
      CoreGlyphData      *glyph[DFB_FONT_MAX_LAYERS];
      unsigned int        index;
      unsigned int        layers = 1;
+     int                 scaled_one;
 
      DIRECT_INTERFACE_GET_DATA(IDirectFBSurface)
 
@@ -2437,6 +2651,9 @@ IDirectFBSurface_DrawGlyph( IDirectFBSurface *thiz,
           layers = 2;
      }
 
+     scaled_one = ((data->state.blittingflags & DSBLIT_FIXEDPOINT)
+                   ? DFB_FIXED_POINT_ONE : 1);
+
      dfb_font_lock( core_font );
 
      ret = dfb_font_decode_character( core_font, data->encoding, character, &index );
@@ -2454,28 +2671,29 @@ IDirectFBSurface_DrawGlyph( IDirectFBSurface *thiz,
      }
 
      if (!(flags & DSTF_TOP)) {
-          x += core_font->ascender * core_font->up_unit_x;
-          y += core_font->ascender * core_font->up_unit_y;
+          x += ((int) core_font->ascender * core_font->up_unit_x) * scaled_one;
+          y += ((int) core_font->ascender * core_font->up_unit_y) * scaled_one;
 
           if (flags & DSTF_BOTTOM) {
-               x -= core_font->descender * core_font->up_unit_x;
-               y -= core_font->descender * core_font->up_unit_y;
+               x -= ((int) core_font->descender * core_font->up_unit_x) * scaled_one;
+               y -= ((int) core_font->descender * core_font->up_unit_y) * scaled_one;
           }
      }
 
      if (flags & (DSTF_RIGHT | DSTF_CENTER)) {
           if (flags & DSTF_RIGHT) {
-               x -= glyph[0]->xadvance;
-               y -= glyph[0]->yadvance;
+               x -= (glyph[0]->xadvance * scaled_one);
+               y -= (glyph[0]->yadvance * scaled_one);
           }
           else if (flags & DSTF_CENTER) {
-               x -= glyph[0]->xadvance >> 1;
-               y -= glyph[0]->yadvance >> 1;
+               x -= (glyph[0]->xadvance * scaled_one) >> 1;
+               y -= (glyph[0]->yadvance * scaled_one) >> 1;
           }
      }
 
      dfb_gfxcard_drawglyph( glyph,
-                            data->area.wanted.x + x, data->area.wanted.y + y,
+                            data->area.wanted.x * scaled_one + x,
+                            data->area.wanted.y * scaled_one + y,
                             core_font, layers, &data->state );
 
      dfb_font_unlock( core_font );
@@ -2924,6 +3142,7 @@ DFBResult IDirectFBSurface_Construct( IDirectFBSurface       *thiz,
      thiz->BatchBlit = IDirectFBSurface_BatchBlit;
      thiz->BatchBlit2 = IDirectFBSurface_BatchBlit2;
      thiz->StretchBlit = IDirectFBSurface_StretchBlit;
+     thiz->BatchStretchBlit = IDirectFBSurface_BatchStretchBlit;
      thiz->TextureTriangles = IDirectFBSurface_TextureTriangles;
 
      thiz->SetDrawingFlags = IDirectFBSurface_SetDrawingFlags;
@@ -3003,8 +3222,10 @@ IDirectFBSurface_listener( const void *msg_data, void *ctx )
                data->area.wanted = data->area.granted = data->area.current = rect;
 
           /* Reset clip to avoid crashes caused by drawing out of bounds. */
-          if (data->clip_set)
-               thiz->SetClip( thiz, &data->clip_wanted );
+          if (data->clip_set) {
+               DFBRegion clip = data->clip_wanted;
+               thiz->SetClip( thiz, &clip );
+          }
           else
                thiz->SetClip( thiz, NULL );
      }

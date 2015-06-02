@@ -108,6 +108,12 @@ else
 SIS315_DIR =
 endif
 
+if GFX_STGFX
+STGFX_DIR = stgfx stgfx2
+else
+STGFX_DIR =
+endif
+
 if GFX_TDFX
 TDFX_DIR = tdfx
 else
@@ -153,6 +159,7 @@ SUBDIRS = \
 	$(SAVAGE_DIR)	\
 	$(SH772X_DIR)	\
 	$(SIS315_DIR)	\
+	$(STGFX_DIR)	\
 	$(TDFX_DIR)	\
 	$(UNICHROME_DIR) \
 	$(VMWARE_DIR)

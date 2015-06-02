@@ -38,7 +38,9 @@ bin_PROGRAMS = \
 	dfbtest_window	\
 	dfbtest_window_flip_once	\
 	direct_stream	\
-	direct_test
+	direct_test	\
+	unit_test_rle	\
+	fixup_rle
 
 libdirectfb = $(top_builddir)/src/libdirectfb.la
 libfusion = $(top_builddir)/lib/fusion/libfusion.la
@@ -99,3 +101,20 @@ fusion_skirmish_LDADD   = $(libdirectfb) $(libfusion) $(libdirect)
 
 fusion_stream_SOURCES = fusion_stream.c
 fusion_stream_LDADD   = $(libdirectfb) $(libfusion) $(libdirect)
+
+
+unit_test_rle_SOURCES = \
+	unit_test_rle.c				\
+	unit_test_rle_helpers.c			\
+	rle_build_packet.c			\
+	unit_test_rle_helpers.h			\
+	rle_build_packet.h
+unit_test_rle_LDADD = $(libdirectfb) $(libfusion) $(libdirect)
+
+fixup_rle_SOURCES = \
+	fixup_rle.c				\
+	unit_test_rle_helpers.c			\
+	rle_build_packet.c			\
+	unit_test_rle_helpers.h			\
+	rle_build_packet.h
+fixup_rle_LDADD = $(libdirectfb) $(libfusion) $(libdirect)

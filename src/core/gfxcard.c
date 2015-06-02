@@ -177,6 +177,12 @@ dfb_graphics_core_initialize( CoreDFB               *core,
      if (!shared->device_info.limits.dst_max.h)
           shared->device_info.limits.dst_max.h = INT_MAX;
 
+     if (!shared->device_info.limits.src_max.w)
+          shared->device_info.limits.src_max.w = INT_MAX;
+
+     if (!shared->device_info.limits.src_max.h)
+          shared->device_info.limits.src_max.h = INT_MAX;
+
      /* Limit video ram length */
      videoram_length = dfb_system_videoram_length();
      if (videoram_length) {
@@ -1016,6 +1022,9 @@ dfb_gfxcard_fillrectangles( const DFBRectangle *rects, int num, CardState *state
                 * Now everything is prepared for execution of the
                 * FillRectangle driver function.
                 */
+               bool need_clip = (!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING )
+                                 && !D_FLAGS_IS_SET( card->caps.clip, DFXL_FILLRECTANGLE ));
+
                for (; i<num; i++) {
                     if (!(state->render_options & DSRO_MATRIX) &&
                         !dfb_rectangle_region_intersects( &rects[i], &state->clip ))
@@ -1023,15 +1032,14 @@ dfb_gfxcard_fillrectangles( const DFBRectangle *rects, int num, CardState *state
 
                     rect = rects[i];
 
-                    if (rect.w > card->limits.dst_max.w || rect.h > card->limits.dst_max.h) {
+                    if (need_clip
+                        || rect.w > card->limits.dst_max.w
+                        || rect.h > card->limits.dst_max.h)
                          dfb_clip_rectangle( &state->clip, &rect );
 
-                         if (rect.w > card->limits.dst_max.w || rect.h > card->limits.dst_max.h)
-                              break;
-                    }
-                    else if (!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING ) &&
-                             !D_FLAGS_IS_SET( card->caps.clip, DFXL_FILLRECTANGLE ))
-                         dfb_clip_rectangle( &state->clip, &rect );
+                    if (rect.w > card->limits.dst_max.w
+                        || rect.h > card->limits.dst_max.h)
+                         break;
 
                     if (!card->funcs.FillRectangle( card->driver_data,
                                                     card->device_data, &rect ))
@@ -1332,10 +1340,11 @@ void dfb_gfxcard_drawlines( DFBRegion *lines, int num_lines, CardState *state )
      if (dfb_gfxcard_state_check( state, DFXL_DRAWLINE ) &&
          dfb_gfxcard_state_acquire( state, DFXL_DRAWLINE ))
      {
+          bool need_clip = (!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING )
+                            && !D_FLAGS_IS_SET( card->caps.clip, DFXL_DRAWLINE ));
+
           for (; i<num_lines; i++) {
-               if (!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING ) &&
-                   !D_FLAGS_IS_SET( card->caps.clip, DFXL_DRAWLINE ) &&
-                   !dfb_clip_line( &state->clip, &lines[i] ))
+               if (need_clip && !dfb_clip_line( &state->clip, &lines[i] ))
                     continue;
 
                if (!card->funcs.DrawLine( card->driver_data,
@@ -1386,20 +1395,20 @@ void dfb_gfxcard_fillspans( int y, DFBSpan *spans, int num_spans, CardState *sta
      if (dfb_gfxcard_state_check( state, DFXL_FILLRECTANGLE ) &&
          dfb_gfxcard_state_acquire( state, DFXL_FILLRECTANGLE ))
      {
+          bool need_clip = (!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING )
+                            && !D_FLAGS_IS_SET( card->caps.clip, DFXL_FILLRECTANGLE ));
+
           for (; i<num_spans; i++) {
                DFBRectangle rect = { spans[i].x, y + i, spans[i].w, 1 };
 
-               if (rect.w > card->limits.dst_max.w || rect.h > card->limits.dst_max.h) {
-                    if (!dfb_clip_rectangle( &state->clip, &rect ))
-                         continue;
+               if ((need_clip
+                    || rect.w > card->limits.dst_max.w
+                    || rect.h > card->limits.dst_max.h)
+                   && !dfb_clip_rectangle( &state->clip, &rect ))
+                    continue;
 
-                    if (rect.w > card->limits.dst_max.w || rect.h > card->limits.dst_max.h)
-                         break;
-               }
-               else if (!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING ) &&
-                        !D_FLAGS_IS_SET( card->caps.clip, DFXL_FILLRECTANGLE ) &&
-                        !dfb_clip_rectangle( &state->clip, &rect ))
-                         continue;
+               if (rect.w > card->limits.dst_max.w || rect.h > card->limits.dst_max.h)
+                    break;
 
                if (!card->funcs.FillRectangle( card->driver_data,
                                                card->device_data, &rect ))
@@ -1941,8 +1950,12 @@ clip_blit_rotated( DFBRectangle *srect, DFBRectangle *drect, const DFBRegion *cl
           srect->w  = drect->h;
           srect->h  = drect->w;
 
-          D_DEBUG_AT( Core_GraphicsOps, "  => %4d,%4d-%4dx%4d -> %4d,%4d-%4dx%4d (90�)\n",
-                      DFB_RECTANGLE_VALS(srect), DFB_RECTANGLE_VALS(drect) );
+          if (!(flags & DSBLIT_FIXEDPOINT))
+               D_DEBUG_AT( Core_GraphicsOps, "  => %4d,%4d-%4dx%4d -> %4d,%4d-%4dx%4d (90째)\n",
+                           DFB_RECTANGLE_VALS(srect), DFB_RECTANGLE_VALS(drect) );
+          else
+               D_DEBUG_AT( Core_GraphicsOps, "  => %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d -> %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d (90째)\n",
+                           DFB_RECTANGLE_VALSf(srect), DFB_RECTANGLE_VALSf(drect) );
      }
      else if (flags & DSBLIT_ROTATE180) {
           srect->x += dest.x2 - clipped.x2;
@@ -1950,8 +1963,12 @@ clip_blit_rotated( DFBRectangle *srect, DFBRectangle *drect, const DFBRegion *cl
           srect->w  = drect->w;
           srect->h  = drect->h;
 
-          D_DEBUG_AT( Core_GraphicsOps, "  => %4d,%4d-%4dx%4d -> %4d,%4d-%4dx%4d (180�)\n",
-                      DFB_RECTANGLE_VALS(srect), DFB_RECTANGLE_VALS(drect) );
+          if (!(flags & DSBLIT_FIXEDPOINT))
+               D_DEBUG_AT( Core_GraphicsOps, "  => %4d,%4d-%4dx%4d -> %4d,%4d-%4dx%4d (180째)\n",
+                           DFB_RECTANGLE_VALS(srect), DFB_RECTANGLE_VALS(drect) );
+          else
+               D_DEBUG_AT( Core_GraphicsOps, "  => %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d -> %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d (180째)\n",
+                           DFB_RECTANGLE_VALSf(srect), DFB_RECTANGLE_VALSf(drect) );
      }
      else if (flags & DSBLIT_ROTATE270) {
           srect->x += clipped.y1 - dest.y1;
@@ -1959,8 +1976,12 @@ clip_blit_rotated( DFBRectangle *srect, DFBRectangle *drect, const DFBRegion *cl
           srect->w  = drect->h;
           srect->h  = drect->w;
 
-          D_DEBUG_AT( Core_GraphicsOps, "  => %4d,%4d-%4dx%4d -> %4d,%4d-%4dx%4d (270�)\n",
-                      DFB_RECTANGLE_VALS(srect), DFB_RECTANGLE_VALS(drect) );
+          if (!(flags & DSBLIT_FIXEDPOINT))
+               D_DEBUG_AT( Core_GraphicsOps, "  => %4d,%4d-%4dx%4d -> %4d,%4d-%4dx%4d (270째)\n",
+                           DFB_RECTANGLE_VALS(srect), DFB_RECTANGLE_VALS(drect) );
+          else
+               D_DEBUG_AT( Core_GraphicsOps, "  => %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d -> %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d (270째)\n",
+                           DFB_RECTANGLE_VALSf(srect), DFB_RECTANGLE_VALSf(drect) );
      }
      else if (flags & (DSBLIT_FLIP_HORIZONTAL | DSBLIT_FLIP_VERTICAL)) {
           // FIXME: rotation and FLIP_ should be supported together, it is not the case in the software driver,
@@ -1988,8 +2009,12 @@ clip_blit_rotated( DFBRectangle *srect, DFBRectangle *drect, const DFBRegion *cl
           srect->w  = drect->w;
           srect->h  = drect->h;
 
-          D_DEBUG_AT( Core_GraphicsOps, "  => %4d,%4d-%4dx%4d -> %4d,%4d-%4dx%4d\n",
-                      DFB_RECTANGLE_VALS(srect), DFB_RECTANGLE_VALS(drect) );
+          if (!(flags & DSBLIT_FIXEDPOINT))
+               D_DEBUG_AT( Core_GraphicsOps, "  => %4d,%4d-%4dx%4d -> %4d,%4d-%4dx%4d\n",
+                           DFB_RECTANGLE_VALS(srect), DFB_RECTANGLE_VALS(drect) );
+          else
+               D_DEBUG_AT( Core_GraphicsOps, "  => %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d -> %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d\n",
+                           DFB_RECTANGLE_VALSf(srect), DFB_RECTANGLE_VALSf(drect) );
      }
 }
 
@@ -1997,12 +2022,19 @@ void dfb_gfxcard_blit( DFBRectangle *rect, int dx, int dy, CardState *state )
 {
      bool         hw    = false;
      DFBRectangle drect = { dx, dy, rect->w, rect->h };
+     DFBRegion    scaled_clip;
+
+     bool fixed_point = !!(state->blittingflags & DSBLIT_FIXEDPOINT);
 
      if (state->blittingflags & (DSBLIT_ROTATE90 | DSBLIT_ROTATE270))
           D_UTIL_SWAP( drect.w, drect.h );
 
-     D_DEBUG_AT( Core_GraphicsOps, "%s( %4d,%4d-%4dx%4d -> %4d,%4d-%4dx%4d, %p )\n",
-                 __FUNCTION__, DFB_RECTANGLE_VALS(rect), DFB_RECTANGLE_VALS(&drect), state );
+     if (!fixed_point)
+          D_DEBUG_AT( Core_GraphicsOps, "%s( %4d,%4d-%4dx%4d -> %4d,%4d-%4dx%4d, %p )\n",
+                      __FUNCTION__, DFB_RECTANGLE_VALS(rect), DFB_RECTANGLE_VALS(&drect), state );
+     else
+          D_DEBUG_AT( Core_GraphicsOps, "%s( %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d -> %4d.%06d,%4d.%06d-%4d.%06dx%4d.%06d, %p )\n",
+                      __FUNCTION__, DFB_RECTANGLE_VALSf(rect), DFB_RECTANGLE_VALSf(&drect), state );
 
      D_ASSERT( card != NULL );
      D_ASSERT( card->shared != NULL );
@@ -2011,19 +2043,32 @@ void dfb_gfxcard_blit( DFBRectangle *rect, int dx, int dy, CardState *state )
      D_ASSERT( rect != NULL );
      D_ASSERT( rect->x >= 0 );
      D_ASSERT( rect->y >= 0 );
-     D_ASSERT( rect->x < state->source->config.size.w );
-     D_ASSERT( rect->y < state->source->config.size.h );
-     D_ASSERT( rect->x + rect->w - 1 < state->source->config.size.w );
-     D_ASSERT( rect->y + rect->h - 1 < state->source->config.size.h );
+     if (fixed_point) {
+          D_ASSERT( rect->x < DFB_FIXED_POINT_VAL( state->source->config.size.w ) );
+          D_ASSERT( rect->y < DFB_FIXED_POINT_VAL( state->source->config.size.h ) );
+          D_ASSERT( rect->x + rect->w - DFB_FIXED_POINT_VAL( 1 ) < DFB_FIXED_POINT_VAL( state->source->config.size.w ) );
+          D_ASSERT( rect->y + rect->h - DFB_FIXED_POINT_VAL( 1 ) < DFB_FIXED_POINT_VAL( state->source->config.size.h ) );
+     }
+     else {
+          D_ASSERT( rect->x < state->source->config.size.w );
+          D_ASSERT( rect->y < state->source->config.size.h );
+          D_ASSERT( rect->x + rect->w - 1 < state->source->config.size.w );
+          D_ASSERT( rect->y + rect->h - 1 < state->source->config.size.h );
+     }
 
      /* The state is locked during graphics operations. */
      dfb_state_lock( state );
+
+     scaled_clip = state->clip;
+     if (fixed_point)
+          dfb_region_upscale( &scaled_clip );
 
      /* Signal beginning of sequence of operations if not already done. */
      dfb_state_start_drawing( state, card );
 
      if (!(state->render_options & DSRO_MATRIX) &&
-         !dfb_clip_blit_precheck( &state->clip, drect.w, drect.h, drect.x, drect.y ))
+         !dfb_clip_blit_precheck_f( &scaled_clip, drect.w, drect.h, drect.x, drect.y,
+                                    fixed_point ) )
      {
           /* no work at all */
           dfb_state_unlock( state );
@@ -2033,17 +2078,36 @@ void dfb_gfxcard_blit( DFBRectangle *rect, int dx, int dy, CardState *state )
      if (dfb_gfxcard_state_check( state, DFXL_BLIT ) &&
          dfb_gfxcard_state_acquire( state, DFXL_BLIT ))
      {
-          if (!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING ) &&
-              !D_FLAGS_IS_SET( card->caps.clip, DFXL_BLIT ))
-               clip_blit_rotated( rect, &drect, &state->clip, state->blittingflags );
+          DFBDimension dst_max = card->limits.dst_max;
+          DFBDimension src_max = card->limits.src_max;
 
-          hw = card->funcs.Blit( card->driver_data, card->device_data, rect, drect.x, drect.y );
+          if (fixed_point) {
+               dfb_dimension_upscale( &dst_max );
+               dfb_dimension_upscale( &src_max );
+          }
+
+          if ((!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING ) &&
+               !D_FLAGS_IS_SET( card->caps.clip, DFXL_BLIT ))
+              || rect->w > dst_max.w || rect->h > dst_max.h
+              || rect->w > src_max.w || rect->h > src_max.h)
+               clip_blit_rotated( rect, &drect, &scaled_clip, state->blittingflags );
+
+          if (rect->w <= dst_max.w && rect->h <= dst_max.h
+              && rect->w <= src_max.w && rect->h <= src_max.h)
+               hw = card->funcs.Blit( card->driver_data, card->device_data, rect, drect.x, drect.y );
 
           dfb_gfxcard_state_release( state );
      }
 
      if (!hw) {
           /* Use software fallback. */
+
+          /* no fixed point support in software rasterizer yet */
+          if (fixed_point) {
+               dfb_rectangle_downscale( rect );
+               dfb_rectangle_downscale( &drect );
+          }
+
           if (!(state->render_options & DSRO_MATRIX)) {
                if (gAcquire( state, DFXL_BLIT )) {
                     clip_blit_rotated( rect, &drect, &state->clip, state->blittingflags );
@@ -2120,19 +2184,42 @@ void dfb_gfxcard_batchblit( DFBRectangle *rects, DFBPoint *points,
      if (dfb_gfxcard_state_check( state, DFXL_BLIT ) &&
          dfb_gfxcard_state_acquire( state, DFXL_BLIT ))
      {
+          DFBRegion scaled_clip = state->clip;
+          bool fixed_point = !!(state->blittingflags & DSBLIT_FIXEDPOINT);
+          bool need_clip = (!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING )
+                            && !D_FLAGS_IS_SET( card->caps.clip, DFXL_BLIT ));
+
+          DFBDimension dst_max = card->limits.dst_max;
+          DFBDimension src_max = card->limits.src_max;
+
+          if (fixed_point) {
+               dfb_region_upscale( &scaled_clip );
+               dfb_dimension_upscale( &dst_max );
+               dfb_dimension_upscale( &src_max );
+          }
+
           for (; i<num; i++) {
+               DFBRectangle * __restrict rect = &rects[i];
+
                if ((state->render_options & DSRO_MATRIX) ||
-                   dfb_clip_blit_precheck( &state->clip,
-                                           rects[i].w, rects[i].h,
-                                           points[i].x, points[i].y ))
+                   dfb_clip_blit_precheck_f( &scaled_clip,
+                                             rect->w, rect->h,
+                                             points[i].x, points[i].y,
+                                             fixed_point ))
                {
-                    if (!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING ) &&
-                        !D_FLAGS_IS_SET( card->caps.clip, DFXL_BLIT ))
-                         dfb_clip_blit( &state->clip, &rects[i],
-                                        &points[i].x, &points[i].y );
+                    if (need_clip
+                        || rect->w > dst_max.w || rect->h > dst_max.h
+                        || rect->w > src_max.w || rect->h > src_max.h)
+                         dfb_clip_blit_f( &scaled_clip, rect,
+                                          &points[i].x, &points[i].y,
+                                          fixed_point );
+
+                    if (rect->w > dst_max.w || rect->h > dst_max.h
+                        || rect->w > src_max.w || rect->h > src_max.h)
+                         break;
 
                     if (!card->funcs.Blit( card->driver_data, card->device_data,
-                                           &rects[i], points[i].x, points[i].y ))
+                                           rect, points[i].x, points[i].y ))
                          break;
                }
           }
@@ -2155,6 +2242,13 @@ void dfb_gfxcard_batchblit( DFBRectangle *rects, DFBPoint *points,
                          DFBRectangle drect;
                          int          x1, y1, x2, y2;
 
+                         /* no fixed point support in software rasterizer yet */
+                         if (state->blittingflags & DSBLIT_FIXEDPOINT) {
+                              dfb_rectangle_downscale( &rects[i] );
+                              points[i].x /= DFB_FIXED_POINT_ONE;
+                              points[i].y /= DFB_FIXED_POINT_ONE;
+                         }
+
                          x1 = points[i].x;   y1 = points[i].y;
                          x2 = x1+rects[i].w; y2 = y1+rects[i].h;
                          DFB_TRANSFORM(x1, y1, state->matrix, state->affine_matrix);
@@ -2172,6 +2266,13 @@ void dfb_gfxcard_batchblit( DFBRectangle *rects, DFBPoint *points,
           else {
                if (gAcquire( state, DFXL_BLIT )) {
                     for (; i<num; i++) {
+                         /* no fixed point support in software rasterizer yet */
+                         if (state->blittingflags & DSBLIT_FIXEDPOINT) {
+                              dfb_rectangle_downscale( &rects[i] );
+                              points[i].x /= DFB_FIXED_POINT_ONE;
+                              points[i].y /= DFB_FIXED_POINT_ONE;
+                         }
+
                          if (dfb_clip_blit_precheck( &state->clip,
                                                      rects[i].w, rects[i].h,
                                                      points[i].x, points[i].y ))
@@ -2205,6 +2306,8 @@ void dfb_gfxcard_batchblit2( DFBRectangle *rects, DFBPoint *points, DFBPoint *po
      D_ASSERT( points != NULL );
      D_ASSERT( points2 != NULL );
      D_ASSERT( num > 0 );
+
+     D_ASSERT( !(state->blittingflags & DSBLIT_FIXEDPOINT) );
 
      /* The state is locked during graphics operations. */
      dfb_state_lock( state );
@@ -2277,19 +2380,34 @@ void dfb_gfxcard_tileblit( DFBRectangle *rect, int dx1, int dy1, int dx2, int dy
      int           x, y;
      int           odx;
      DFBRectangle  srect;
-     DFBRegion    *clip;
-
-     D_DEBUG_AT( Core_GraphicsOps, "%s( %d,%d - %d,%d, %p )\n", __FUNCTION__, dx1, dy1, dx2, dy2, state );
+     DFBRegion     clip;
 
      D_ASSERT( card != NULL );
      D_ASSERT( card->shared != NULL );
      D_MAGIC_ASSERT( state, CardState );
      D_ASSERT( rect != NULL );
 
-     /* If called with an invalid rectangle, the algorithm goes into an
-        infinite loop. This should never happen but it's safer to check. */
-     D_ASSERT( rect->w >= 1 );
-     D_ASSERT( rect->h >= 1 );
+     if (!(state->blittingflags & DSBLIT_FIXEDPOINT)) {
+          D_DEBUG_AT( Core_GraphicsOps, "%s( %d,%d - %d,%d, %p )\n",
+                      __FUNCTION__, dx1, dy1, dx2, dy2, state );
+
+          /* If called with an invalid rectangle, the algorithm goes into an
+             infinite loop. This should never happen but it's safer to
+             check. */
+          D_ASSERT( rect->w >= 1 );
+          D_ASSERT( rect->h >= 1 );
+     }
+     else {
+          D_DEBUG_AT( Core_GraphicsOps, "%s( %d.%06d,%d.%06d - %d.%06d,%d.%06d, %p )\n",
+                      __FUNCTION__, DFB_INT_VALf( dx1 ), DFB_INT_VALf( dy1 ),
+                      DFB_INT_VALf( dx2 ), DFB_INT_VALf( dy2 ), state );
+
+          /* If called with an invalid rectangle, the algorithm goes into an
+             infinite loop. This should never happen but it's safer to
+             check. */
+          D_ASSERT( rect->w >= DFB_FIXED_POINT_VAL( 1 ) );
+          D_ASSERT( rect->h >= DFB_FIXED_POINT_VAL( 1 ) );
+     }
 
      /* The state is locked during graphics operations. */
      dfb_state_lock( state );
@@ -2297,36 +2415,43 @@ void dfb_gfxcard_tileblit( DFBRectangle *rect, int dx1, int dy1, int dx2, int dy
      /* Signal beginning of sequence of operations if not already done. */
      dfb_state_start_drawing( state, card );
 
-     clip = &state->clip;
+     clip = state->clip;
+     if (state->blittingflags & DSBLIT_FIXEDPOINT)
+          dfb_region_upscale( &clip );
 
      /* Check if anything is drawn at all. */
-     if (!(state->render_options & DSRO_MATRIX) &&
-         !dfb_clip_blit_precheck( clip, dx2-dx1+1, dy2-dy1+1, dx1, dy1 )) {
-          dfb_state_unlock( state );
-          return;
+     if (!(state->render_options & DSRO_MATRIX)) {
+          int offs = ((state->blittingflags & DSBLIT_FIXEDPOINT)
+                      ? DFB_FIXED_POINT_ONE : 1);
+
+          if (!dfb_clip_blit_precheck_f( &clip, dx2-dx1+offs, dy2-dy1+offs, dx1, dy1,
+                                         !!(state->blittingflags & DSBLIT_FIXEDPOINT) )) {
+               dfb_state_unlock( state );
+               return;
+          }
      }
 
      /* Remove clipped tiles. */
-     if (dx1 < clip->x1) {
-          int outer = clip->x1 - dx1;
+     if (dx1 < clip.x1) {
+          int outer = clip.x1 - dx1;
 
           dx1 += outer - (outer % rect->w);
      }
 
-     if (dy1 < clip->y1) {
-          int outer = clip->y1 - dy1;
+     if (dy1 < clip.y1) {
+          int outer = clip.y1 - dy1;
 
           dy1 += outer - (outer % rect->h);
      }
 
-     if (dx2 > clip->x2) {
-          int outer = clip->x2 - dx2;
+     if (dx2 > clip.x2) {
+          int outer = clip.x2 - dx2;
 
           dx2 -= outer - (outer % rect->w);
      }
 
-     if (dy2 > clip->y2) {
-          int outer = clip->y2 - dy2;
+     if (dy2 > clip.y2) {
+          int outer = clip.y2 - dy2;
 
           dy2 -= outer - (outer % rect->h);
      }
@@ -2336,11 +2461,12 @@ void dfb_gfxcard_tileblit( DFBRectangle *rect, int dx1, int dy1, int dx2, int dy
      if (dfb_gfxcard_state_check( state, DFXL_BLIT ) &&
          dfb_gfxcard_state_acquire( state, DFXL_BLIT )) {
           bool hw = true;
+          bool fixed_point = !!(state->blittingflags & DSBLIT_FIXEDPOINT);
 
           for (; dy1 < dy2; dy1 += rect->h) {
                for (; dx1 < dx2; dx1 += rect->w) {
-
-                    if (!dfb_clip_blit_precheck( clip, rect->w, rect->h, dx1, dy1 ))
+                    if (!dfb_clip_blit_precheck_f( &clip, rect->w, rect->h, dx1, dy1,
+                                                   fixed_point ))
                          continue;
 
                     x = dx1;
@@ -2349,7 +2475,7 @@ void dfb_gfxcard_tileblit( DFBRectangle *rect, int dx1, int dy1, int dx2, int dy
 
                     if (!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING ) &&
                         !D_FLAGS_IS_SET( card->caps.clip, DFXL_BLIT ))
-                         dfb_clip_blit( clip, &srect, &x, &y );
+                         dfb_clip_blit_f( &clip, &srect, &x, &y, fixed_point );
 
                     hw = card->funcs.Blit( card->driver_data,
                                            card->device_data, &srect, x, y );
@@ -2365,6 +2491,14 @@ void dfb_gfxcard_tileblit( DFBRectangle *rect, int dx1, int dy1, int dx2, int dy
      }
 
      if (dy1 < dy2) {
+          if (state->blittingflags & DSBLIT_FIXEDPOINT) {
+               dfb_rectangle_downscale( rect );
+               dx1 /= DFB_FIXED_POINT_ONE;
+               dy1 /= DFB_FIXED_POINT_ONE;
+               dx2 /= DFB_FIXED_POINT_ONE;
+               dy2 /= DFB_FIXED_POINT_ONE;
+          }
+
           if (state->render_options & DSRO_MATRIX) {
                if (state->matrix[0] < 0  || state->matrix[1] != 0 ||
                    state->matrix[3] != 0 || state->matrix[4] < 0  ||
@@ -2401,14 +2535,14 @@ void dfb_gfxcard_tileblit( DFBRectangle *rect, int dx1, int dy1, int dx2, int dy
                     for (; dy1 < dy2; dy1 += rect->h) {
                          for (; dx1 < dx2; dx1 += rect->w) {
 
-                              if (!dfb_clip_blit_precheck( clip, rect->w, rect->h, dx1, dy1 ))
+                              if (!dfb_clip_blit_precheck( &state->clip, rect->w, rect->h, dx1, dy1 ))
                                    continue;
 
                               x = dx1;
                               y = dy1;
                               srect = *rect;
 
-                              dfb_clip_blit( clip, &srect, &x, &y );
+                              dfb_clip_blit( &state->clip, &srect, &x, &y );
 
                               gBlit( state, &srect, x, y );
                          }
@@ -2423,32 +2557,22 @@ void dfb_gfxcard_tileblit( DFBRectangle *rect, int dx1, int dy1, int dx2, int dy
      dfb_state_unlock( state );
 }
 
-void dfb_gfxcard_stretchblit( DFBRectangle *srect, DFBRectangle *drect,
-                              CardState *state )
+void dfb_gfxcard_batchstretchblit( DFBRectangle *srects,
+                                   DFBRectangle *drects,
+                                   int num, CardState *state )
 {
-     bool hw = false;
+     int i = 0;
+     bool fixed_point;
+
+     D_DEBUG_AT( Core_GraphicsOps, "%s( %p, %p [%d], %p )\n", __FUNCTION__,
+                 srects, drects, num, state );
 
      D_ASSERT( card != NULL );
      D_ASSERT( card->shared != NULL );
      D_MAGIC_ASSERT( state, CardState );
-     D_ASSERT( srect != NULL );
-     D_ASSERT( drect != NULL );
-
-     D_DEBUG_AT( Core_GraphicsOps, "%s( %d,%d - %dx%d -> %d,%d - %dx%d, %p )\n",
-                 __FUNCTION__, DFB_RECTANGLE_VALS(srect), DFB_RECTANGLE_VALS(drect), state );
-
-     if (state->blittingflags & (DSBLIT_ROTATE90 | DSBLIT_ROTATE270)) {
-          if (srect->w == drect->h && srect->h == drect->w) {
-               dfb_gfxcard_blit( srect, drect->x, drect->y, state );
-               return;
-          }
-     }
-     else {
-          if (srect->w == drect->w && srect->h == drect->h) {
-               dfb_gfxcard_blit( srect, drect->x, drect->y, state );
-               return;
-          }
-     }
+     D_ASSERT( srects != NULL );
+     D_ASSERT( drects != NULL );
+     D_ASSERT( num > 0 );
 
      /* The state is locked during graphics operations. */
      dfb_state_lock( state );
@@ -2456,60 +2580,119 @@ void dfb_gfxcard_stretchblit( DFBRectangle *srect, DFBRectangle *drect,
      /* Signal beginning of sequence of operations if not already done. */
      dfb_state_start_drawing( state, card );
 
-     if (!(state->render_options & DSRO_MATRIX) &&
-         !dfb_clip_blit_precheck( &state->clip, drect->w, drect->h,
-                                  drect->x, drect->y ))
-     {
-          dfb_state_unlock( state );
-          return;
-     }
+     fixed_point = !!(state->blittingflags & DSBLIT_FIXEDPOINT);
 
      if (dfb_gfxcard_state_check( state, DFXL_STRETCHBLIT ) &&
          dfb_gfxcard_state_acquire( state, DFXL_STRETCHBLIT ))
      {
-          if (!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING ) &&
-              !D_FLAGS_IS_SET( card->caps.clip, DFXL_STRETCHBLIT ))
-               dfb_clip_stretchblit( &state->clip, srect, drect );
+          DFBRegion scaled_clip = state->clip;
+          bool need_clip = (!D_FLAGS_IS_SET( card->caps.flags, CCF_CLIPPING )
+                            && !D_FLAGS_IS_SET( card->caps.clip, DFXL_STRETCHBLIT ));
 
-          hw = card->funcs.StretchBlit( card->driver_data, card->device_data, srect, drect );
+          DFBDimension dst_max = card->limits.dst_max;
+          DFBDimension src_max = card->limits.src_max;
+
+          if (fixed_point) {
+               dfb_region_upscale( &scaled_clip );
+               dfb_dimension_upscale( &dst_max );
+               dfb_dimension_upscale( &src_max );
+          }
+
+          for (; i<num; i++) {
+               DFBRectangle * __restrict srect = &srects[i];
+               DFBRectangle * __restrict drect = &drects[i];
+
+               if (!fixed_point)
+                    D_DEBUG_AT( Core_GraphicsOps,
+                                "  -> %d,%d - %dx%d -> %d,%d - %dx%d\n",
+                                DFB_RECTANGLE_VALS(srect),
+                                DFB_RECTANGLE_VALS(drect) );
+               else
+                    D_DEBUG_AT( Core_GraphicsOps,
+                                "  -> %d.%06d,%d.%06d - %d.%06dx%d.%06d -> %d.%06d,%d.%06d - %d.%06dx%d.%06d\n",
+                                DFB_RECTANGLE_VALSf(srect),
+                                DFB_RECTANGLE_VALSf(drect) );
+
+               if ((state->blittingflags & (DSBLIT_ROTATE90 | DSBLIT_ROTATE270)
+                    && (srect->w == drect->h && srect->h == drect->w))
+                   || (srect->w == drect->w && srect->h == drect->h)) {
+                    dfb_gfxcard_state_release( state );
+                    dfb_gfxcard_blit( srect, drect->x, drect->y, state );
+                    if (!dfb_gfxcard_state_check( state, DFXL_STRETCHBLIT )
+                        || !dfb_gfxcard_state_acquire( state, DFXL_STRETCHBLIT ))
+                         break;
+               }
+               else if ((state->render_options & DSRO_MATRIX)
+                        || dfb_clip_blit_precheck_f( &scaled_clip, drect->w, drect->h,
+                                                     drect->x, drect->y,
+                                                     fixed_point )) {
+                    if (need_clip
+                        || drect->w > dst_max.w || drect->h > dst_max.h
+                        || srect->w > src_max.w || srect->h > src_max.h)
+                         dfb_clip_stretchblit_f( &scaled_clip, srect, drect, fixed_point );
+
+                    if (drect->w > dst_max.w || drect->h > dst_max.h
+                        || srect->w > src_max.w || srect->h > src_max.h
+                        || !card->funcs.StretchBlit( card->driver_data,
+                                                     card->device_data,
+                                                     srect, drect ))
+                         break;
+               }
+          }
 
           dfb_gfxcard_state_release( state );
      }
 
-     if (!hw) {
-          if (state->render_options & DSRO_MATRIX) {
-               int x1, y1, x2, y2;
-
-               if (state->matrix[0] < 0  || state->matrix[1] != 0 ||
-                   state->matrix[3] != 0 || state->matrix[4] < 0  ||
-                   state->matrix[6] != 0 || state->matrix[7] != 0) {
-                    D_WARN( "rotation not yet implemented" );
-                    dfb_state_unlock( state );
-                    return;
-               }
-
-               x1 = drect->x;    y1 = drect->y;
-               x2 = x1+drect->w; y2 = y1+drect->h;
-               DFB_TRANSFORM(x1, y1, state->matrix, state->affine_matrix);
-               DFB_TRANSFORM(x2, y2, state->matrix, state->affine_matrix);
-               drect->x = x1;    drect->y = y1;
-               drect->w = x2-x1; drect->h = y2-y1;
-
-               if (!dfb_clip_blit_precheck( &state->clip,
-                                            drect->w, drect->h, drect->x, drect->y )) {
-                    dfb_state_unlock( state );
-                    return;
-               }
-          }
-
+     if (i < num) {
           if (gAcquire( state, DFXL_STRETCHBLIT )) {
-               /* Clipping is performed in the following function. */
-               gStretchBlit( state, srect, drect );
+               for (; i<num; i++) {
+                    DFBRectangle * __restrict srect = &srects[i];
+                    DFBRectangle * __restrict drect = &drects[i];
+
+                    /* no fixed point support in software rasterizer yet */
+                    if (fixed_point) {
+                         dfb_rectangle_downscale( srect );
+                         dfb_rectangle_downscale( drect );
+                    }
+
+                    if (state->render_options & DSRO_MATRIX) {
+                         int x1, y1, x2, y2;
+
+                         if (state->matrix[0] < 0  || state->matrix[1] != 0 ||
+                             state->matrix[3] != 0 || state->matrix[4] < 0  ||
+                             state->matrix[6] != 0 || state->matrix[7] != 0) {
+                              D_WARN( "rotation not yet implemented" );
+                              continue;
+                         }
+
+                         x1 = drect->x;    y1 = drect->y;
+                         x2 = x1+drect->w; y2 = y1+drect->h;
+                         DFB_TRANSFORM(x1, y1, state->matrix, state->affine_matrix);
+                         DFB_TRANSFORM(x2, y2, state->matrix, state->affine_matrix);
+                         drect->x = x1;    drect->y = y1;
+                         drect->w = x2-x1; drect->h = y2-y1;
+
+                         if (!dfb_clip_blit_precheck( &state->clip,
+                                                      drect->w, drect->h, drect->x, drect->y ))
+                              continue;
+                    }
+
+                    gStretchBlit( state, srect, drect );
+               }
+
                gRelease( state );
           }
      }
 
      dfb_state_unlock( state );
+}
+
+void dfb_gfxcard_stretchblit( DFBRectangle *srect, DFBRectangle *drect,
+                              CardState *state )
+{
+     D_ONCE ("dfb_gfxcard_batchstretchblit() should be used!");
+
+     dfb_gfxcard_batchstretchblit( srect, drect, 1, state);
 }
 
 void dfb_gfxcard_texture_triangles( DFBVertex *vertices, int num,
@@ -2601,6 +2784,8 @@ font_state_prepare( CardState   *state,
                dfb_state_set_dst_blend( state, DSBF_INVSRCALPHA );
           }
 
+          flags |= (state->blittingflags & DSBLIT_FIXEDPOINT);
+
           dfb_state_set_blitting_flags( state, flags );
      }
      else {
@@ -2640,12 +2825,30 @@ dfb_gfxcard_drawstring( const u8 *text, int bytes,
      int           ox = x;
      int           oy = y;
 
-     if (encoding == DTEID_UTF8)
-          D_DEBUG_AT( Core_GraphicsOps, "%s( '%s' [%d], %d,%d, %p, %p )\n",
-                      __FUNCTION__, text, bytes, x, y, font, state );
-     else
-          D_DEBUG_AT( Core_GraphicsOps, "%s( %p [%d], %d, %d,%d, %p, %p )\n",
-                      __FUNCTION__, text, bytes, encoding, x, y, font, state );
+     bool          fixed_point;
+     DFBRegion     scaled_clip;
+     int           scaled_fontheight;
+
+     fixed_point = !!(state->blittingflags & DSBLIT_FIXEDPOINT);
+
+     if (encoding == DTEID_UTF8) {
+          if (fixed_point)
+               D_DEBUG_AT( Core_GraphicsOps, "%s( '%s' [%d], %d.%06d,%d.%06d, %p, %p )\n",
+                           __FUNCTION__, text, bytes, DFB_INT_VALf( x ),
+                           DFB_INT_VALf( y ), font, state );
+          else
+               D_DEBUG_AT( Core_GraphicsOps, "%s( '%s' [%d], %d,%d, %p, %p )\n",
+                           __FUNCTION__, text, bytes, x, y, font, state );
+     }
+     else {
+          if (fixed_point)
+               D_DEBUG_AT( Core_GraphicsOps, "%s( %p [%d], %d, %d.%06d,%d.%06d, %p, %p )\n",
+                           __FUNCTION__, text, bytes, encoding, DFB_INT_VALf( x ),
+                           DFB_INT_VALf( y ), font, state );
+          else
+               D_DEBUG_AT( Core_GraphicsOps, "%s( %p [%d], %d, %d,%d, %p, %p )\n",
+                           __FUNCTION__, text, bytes, encoding, x, y, font, state );
+     }
 
      D_ASSERT( card != NULL );
      D_ASSERT( card->shared != NULL );
@@ -2657,10 +2860,17 @@ dfb_gfxcard_drawstring( const u8 *text, int bytes,
      surface = state->destination;
      D_MAGIC_ASSERT( surface, CoreSurface );
 
+     scaled_clip = state->clip;
+     scaled_fontheight = font->height;
+     if (fixed_point) {
+          dfb_region_upscale( &scaled_clip );
+          scaled_fontheight *= DFB_FIXED_POINT_ONE;
+     }
+
      /* simple prechecks */
      if (!(state->render_options & DSRO_MATRIX) &&
-         (x > state->clip.x2 || y > state->clip.y2 + font->ascender ||
-          y - font->descender <= state->clip.y1)) {
+         (x > scaled_clip.x2 || y > scaled_clip.y2 ||
+          y + scaled_fontheight <= scaled_clip.y1)) {
           return;
      }
 
@@ -2694,8 +2904,14 @@ dfb_gfxcard_drawstring( const u8 *text, int bytes,
                }
 
                if (prev && font->GetKerning && font->GetKerning( font, prev, current, &kern_x, &kern_y) == DFB_OK) {
-                    x += kern_x;
-                    y += kern_y;
+                    if (!fixed_point) {
+                         x += kern_x;
+                         y += kern_y;
+                    }
+                    else {
+                         x += DFB_FIXED_POINT_VAL( kern_x );
+                         y += DFB_FIXED_POINT_VAL( kern_y );
+                    }
                }
 
                if (glyph->width) {
@@ -2709,14 +2925,20 @@ dfb_gfxcard_drawstring( const u8 *text, int bytes,
                               dfb_state_set_source( state, glyph->surface );
                     }
 
-                    points[num_blits] = (DFBPoint){ x + glyph->left, y + glyph->top };
-                    rects[num_blits]  = (DFBRectangle){ glyph->start, 0, glyph->width, glyph->height };
+                    if (!fixed_point) {
+                         points[num_blits] = (DFBPoint){ x + glyph->left, y + glyph->top };
+                         rects[num_blits]  = (DFBRectangle){ glyph->start, 0, glyph->width, glyph->height };
+                    }
+                    else {
+                         points[num_blits] = (DFBPoint){ x + DFB_FIXED_POINT_VAL( glyph->left ), y + DFB_FIXED_POINT_VAL( glyph->top ) };
+                         rects[num_blits]  = (DFBRectangle){ DFB_FIXED_POINT_VAL( glyph->start ), 0, DFB_FIXED_POINT_VAL( glyph->width ), DFB_FIXED_POINT_VAL( glyph->height ) };
+                    }
 
                     num_blits++;
                }
 
-               x   += glyph->xadvance;
-               y   += glyph->yadvance;
+               x   += (!fixed_point ? glyph->xadvance : DFB_FIXED_POINT_VAL( glyph->xadvance ));
+               y   += (!fixed_point ? glyph->yadvance : DFB_FIXED_POINT_VAL( glyph->yadvance ));
                prev = current;
           }
 
@@ -2738,8 +2960,11 @@ void dfb_gfxcard_drawglyph( CoreGlyphData **glyph, int x, int y,
      CoreSurface *surface;
      CardState    state_backup;
 
-     D_DEBUG_AT( Core_GraphicsOps, "%s( %d,%d, %u, %p, %p )\n",
-                 __FUNCTION__, x, y, layers, font, state );
+     bool         fixed_point;
+
+     D_DEBUG_AT( Core_GraphicsOps, "%s( %d.%06d,%d.%06d, %u, %p, %p )\n",
+                 __FUNCTION__, DFB_INT_VALf( x ), DFB_INT_VALf( y ),
+                 layers, font, state );
 
      D_ASSERT( card != NULL );
      D_ASSERT( card->shared != NULL );
@@ -2748,6 +2973,8 @@ void dfb_gfxcard_drawglyph( CoreGlyphData **glyph, int x, int y,
 
      surface = state->destination;
      D_MAGIC_ASSERT( surface, CoreSurface );
+
+     fixed_point = !!(state->blittingflags & DSBLIT_FIXEDPOINT);
 
      font_state_prepare( state, &state_backup, font, surface );
 
@@ -2761,7 +2988,13 @@ void dfb_gfxcard_drawglyph( CoreGlyphData **glyph, int x, int y,
 
                dfb_state_set_source( state, glyph[l]->surface );
 
-               dfb_gfxcard_blit( &rect, x + glyph[l]->left, y + glyph[l]->top, state );
+               if (!fixed_point) {
+                    dfb_gfxcard_blit( &rect, x + glyph[l]->left, y + glyph[l]->top, state );
+               }
+               else {
+                    dfb_rectangle_upscale( &rect );
+                    dfb_gfxcard_blit( &rect, x + DFB_FIXED_POINT_VAL( glyph[l]->left ), y + DFB_FIXED_POINT_VAL( glyph[l]->top ), state );
+               }
           }
      }
 

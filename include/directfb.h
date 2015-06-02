@@ -760,6 +760,14 @@ typedef enum {
      DSBLIT_SOURCE2            = 0x00400000, /* use secondary source instead of destination for reading */
      DSBLIT_FLIP_HORIZONTAL    = 0x01000000, /* flip the image horizontally */
      DSBLIT_FLIP_VERTICAL      = 0x02000000, /* flip the image vertically */
+#define DFB_FIXED_POINT_ONE            (1 << 16)                   /* 1 in 16.16 format */
+#define DFB_FIXED_POINT_HALF           (DFB_FIXED_POINT_ONE / 2)   /* 1/2 in 16.16 format */
+#define DFB_FIXED_POINT_FRACTION_MASK  (DFB_FIXED_POINT_ONE - 1)
+#define DFB_FIXED_POINT_VAL(x)         ((x) << 16) /* convert x to fixed point */
+#define DFB_FIXED_POINT_TO_INT(x)      ((x) >> 16) /* convert fixed point to int */
+     DSBLIT_FIXEDPOINT         = 0x00800000, /* use subpixel precision, i.e.
+                                                all x/y/w/h coordinates are in
+                                                fixed point 16.16 format */
 } DFBSurfaceBlittingFlags;
 
 /*
@@ -1617,9 +1625,13 @@ typedef enum {
 typedef enum {
      DVPLAY_NOFX        = 0x00000000, /* normal playback           */
      DVPLAY_REWIND      = 0x00000001, /* reverse playback          */
-     DVPLAY_LOOPING     = 0x00000002  /* automatically restart
+     DVPLAY_LOOPING     = 0x00000002, /* automatically restart
                                          playback when end-of-stream
                                          is reached (gapless).     */
+     DVPLAY_PACED       = 0x00000004  /* decoding pace is controlled
+                                         by the caller, the decoder
+                                         won't wait on its own while
+                                         decoding frames. */
 } DFBVideoProviderPlaybackFlags;
 
 /*
@@ -4253,6 +4265,22 @@ DEFINE_INTERFACE(   IDirectFBSurface,
           const DFBTrapezoid       *traps,
           unsigned int              num
      );
+
+   /** Blitting functions **/
+
+     /*
+      * Blit a bunch of areas scaled from the source to the destination
+      * rectangles.
+      *
+      * <b>source_rects</b> and <b>dest_rects</b> will be modified!
+      */
+     DFBResult (*BatchStretchBlit) (
+          IDirectFBSurface         *thiz,
+          IDirectFBSurface         *source,
+          DFBRectangle             *source_rects,
+          DFBRectangle             *dest_rects,
+          int                       num
+     );
 )
 
 
@@ -6013,6 +6041,19 @@ DEFINE_INTERFACE(   IDirectFBFont,
 )
 
 /*
+ * Flags for image providers.
+ */
+typedef enum {
+    DIPFLAGS_NONE,
+    DIPFLAGS_BACKGROUND_DECODE
+} DFBImageProviderFlags;
+
+typedef enum {
+    DIPSYNCFLAGS_SYNC, /* sync, i.e. wait for the image provider to finish */
+    DIPSYNCFLAGS_TRYSYNC /* figure out if image provider is finished or still busy */
+} DFBImageProviderSyncFlags;
+
+/*
  * Capabilities of an image.
  */
 typedef enum {
@@ -6109,6 +6150,10 @@ DEFINE_INTERFACE(   IDirectFBImageProvider,
       * Registers a callback for progressive image loading.
       *
       * The function is called each time a chunk of the image is decoded.
+      *
+      * In case of an image provider working in the background, the
+      * callback could be called in a different thread context! So you
+      * might have to take appropriate actions to handle this.
       */
      DFBResult (*SetRenderCallback) (
           IDirectFBImageProvider   *thiz,
@@ -6127,6 +6172,57 @@ DEFINE_INTERFACE(   IDirectFBImageProvider,
           IDirectFBSurface         *surface,
           const DFBRectangle       *src_rect,
           const char               *filename
+     );
+
+
+   /** Set Flags **/
+
+     /*
+      * Set image provider flags.
+      *
+      * This allows one to switch an image provider's mode of
+      * operation, between default and background.
+      *
+      * In default (which is also the traditional) mode, a call to
+      * RenderTo() will block until the image provider has finished
+      * decoding the image. This is also the behaviour if this API
+      * is not used at all.
+      *
+      * In background mode, the image is being decoded in the background,
+      * i.e. the call to RenderTo() will return almost immediately. The
+      * application may do other useful processing while the image is being
+      * decoded. In most implementations, background decode will just use
+      * a worker thread.
+      *
+      * Not all image providers support background mode and will return
+      * DFB_UNSUPPORTED in that case.
+      *
+      * Calling SetFlags() after RenderTo() makes no sense and is
+      * unsupported.
+      *
+      */
+     DFBResult (*SetFlags) (
+          IDirectFBImageProvider *thiz,
+          DFBImageProviderFlags   flags
+     );
+
+
+   /** Rendering **/
+
+     /*
+      * For a background image provider, waits for it to finish
+      * decoding the image.
+      *
+      * For a default image provider, does nothing.
+      *
+      * This needs to be called for background image providers
+      * before accessing the destination surface (using either the
+      * software or the hardware), to make sure that the image has been
+      * completely decoded.
+      */
+     DFBResult (*Sync) (
+          IDirectFBImageProvider    *thiz,
+          DFBImageProviderSyncFlags  flags
      );
 )
 

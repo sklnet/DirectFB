@@ -222,7 +222,7 @@ IDirectFBPalette_CreateCopy( IDirectFBPalette  *thiz,
      if (!interface)
           return DFB_INVARG;
 
-     ret = dfb_palette_create( NULL,    /* FIXME */
+     ret = dfb_palette_create( data->core,
                                data->palette->num_entries, &palette );
      if (ret)
           return ret;
@@ -235,7 +235,7 @@ IDirectFBPalette_CreateCopy( IDirectFBPalette  *thiz,
 
      DIRECT_ALLOCATE_INTERFACE( iface, IDirectFBPalette );
 
-     ret = IDirectFBPalette_Construct( iface, palette );
+     ret = IDirectFBPalette_Construct( iface, palette, data->core );
 
      dfb_palette_unref( palette );
 
@@ -331,7 +331,8 @@ IDirectFBPalette_FindBestMatchYUV( IDirectFBPalette *thiz,
 /******/
 
 DFBResult IDirectFBPalette_Construct( IDirectFBPalette *thiz,
-                                      CorePalette      *palette )
+                                      CorePalette      *palette,
+                                      CoreDFB          *core )
 {
      DIRECT_ALLOCATE_INTERFACE_DATA(thiz, IDirectFBPalette)
 
@@ -342,7 +343,7 @@ DFBResult IDirectFBPalette_Construct( IDirectFBPalette *thiz,
 
      data->ref     = 1;
      data->palette = palette;
-
+     data->core    = core;
 
      thiz->AddRef           = IDirectFBPalette_AddRef;
      thiz->Release          = IDirectFBPalette_Release;

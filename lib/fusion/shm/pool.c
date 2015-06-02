@@ -721,7 +721,12 @@ init_pool( FusionSHM           *shm,
                                 BLOCKALIGN( (max_size + BLOCKSIZE-1) / BLOCKSIZE * sizeof(shmalloc_info) );
 
      pool_addr_base = world->shared->pool_base;
-     world->shared->pool_base += ((pool_max_size + page_size - 1) & ~(page_size - 1)) + page_size;
+#ifdef __SH4__
+  #define SHM_ALIGN_SIZE 0x4000
+#else
+  #define SHM_ALIGN_SIZE page_size
+#endif
+     world->shared->pool_base += ((pool_max_size + page_size - 1) & ~(SHM_ALIGN_SIZE - 1)) + SHM_ALIGN_SIZE;
      /* Exceeded limit? */
      if (world->shared->pool_base > world->shared->pool_max)
           return DR_NOSHAREDMEMORY;

@@ -435,8 +435,13 @@ map_shared_root( void               *shm_base,
 
 
 
+#if defined(__SH4__)
+#  define shm_align_mask  (0x3fff)
+#else
+#  define shm_align_mask  (0xffff)
+#endif
      /* Map shared area. */
-     map = mmap( shm_base + 0x10000 * world_index, sizeof(FusionWorldShared),
+     map = mmap( shm_base + (shm_align_mask + 1) * world_index, sizeof(FusionWorldShared),
                  PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED, fd, 0 );
      if (map == MAP_FAILED) {
           ret = errno2result(errno);

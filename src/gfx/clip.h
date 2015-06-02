@@ -52,21 +52,33 @@ DFBBoolean   dfb_clip_line( const DFBRegion *clip, DFBRegion *line );
  * Clips the rectangle to the clipping region.
  * Returns true if there was an intersection with the clipping region.
  */
+DFBBoolean   dfb_clip_rectangle_f( const DFBRegion *clip, DFBRectangle *rect,
+                                   bool fixedpoint );
 DFBBoolean   dfb_clip_rectangle( const DFBRegion *clip, DFBRectangle *rect );
 
 /*
  * Clips the rectangle to the clipping region.
  * Returns a flag for each edge that wasn't cut off.
  */
+DFBEdgeFlags dfb_clip_edges_f( const DFBRegion *clip, DFBRectangle *rect,
+                               bool fixedpoint );
 DFBEdgeFlags dfb_clip_edges( const DFBRegion *clip, DFBRectangle *rect );
+
+static inline DFBBoolean
+dfb_clip_needed_f( const DFBRegion *clip, DFBRectangle *rect, bool fixedpoint )
+{
+     int scaled_one = fixedpoint ? DFB_FIXED_POINT_ONE : 1;
+
+     return ((clip->x1 > rect->x) ||
+             (clip->y1 > rect->y) ||
+             (clip->x2 < rect->x + rect->w - scaled_one) ||
+             (clip->y2 < rect->y + rect->h - scaled_one));
+}
 
 static inline DFBBoolean
 dfb_clip_needed( const DFBRegion *clip, DFBRectangle *rect )
 {
-     return ((clip->x1 > rect->x) ||
-             (clip->y1 > rect->y) ||
-             (clip->x2 < rect->x + rect->w - 1) ||
-             (clip->y2 < rect->y + rect->h - 1));
+     return dfb_clip_needed_f( clip, rect, false );
 }
 
 /*
@@ -92,10 +104,12 @@ DFBBoolean   dfb_clip_triangle( const DFBRegion   *clip,
  * Returns true if blitting may need to be performed.
  */
 static inline DFBBoolean
-dfb_clip_blit_precheck( const DFBRegion *clip,
-                        int w, int h, int dx, int dy )
+dfb_clip_blit_precheck_f( const DFBRegion *clip,
+                          int w, int h, int dx, int dy, bool fixedpoint )
 {
-     if (w < 1 || h < 1 ||
+     int scaled_one = fixedpoint ? DFB_FIXED_POINT_ONE : 1;
+
+     if (w < scaled_one || h < scaled_one ||
          (clip->x1 >= dx + w) ||
          (clip->x2 < dx) ||
          (clip->y1 >= dy + h) ||
@@ -105,10 +119,19 @@ dfb_clip_blit_precheck( const DFBRegion *clip,
      return DFB_TRUE;
 }
 
+static inline DFBBoolean
+dfb_clip_blit_precheck( const DFBRegion *clip,
+                        int w, int h, int dx, int dy )
+{
+     return dfb_clip_blit_precheck_f( clip, w, h, dx, dy, false );
+}
+
 /*
  * Clips the blitting request to the clipping region.
  * This includes adjustment of source AND destination coordinates.
  */
+void dfb_clip_blit_f( const DFBRegion *clip,
+                      DFBRectangle *srect, int *dx, int *dy, bool fixedpoint );
 void dfb_clip_blit( const DFBRegion *clip,
                     DFBRectangle *srect, int *dx, int *dy );
 
@@ -117,6 +140,10 @@ void dfb_clip_blit( const DFBRegion *clip,
  * This includes adjustment of source AND destination coordinates
  * based on the scaling factor.
  */
+void dfb_clip_stretchblit_f( const DFBRegion *clip,
+                             DFBRectangle    *srect,
+                             DFBRectangle    *drect,
+                             bool             fixedpoint );
 void dfb_clip_stretchblit( const DFBRegion *clip,
                            DFBRectangle    *srect,
                            DFBRectangle    *drect );

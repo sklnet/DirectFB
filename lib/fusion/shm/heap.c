@@ -640,7 +640,7 @@ __shmalloc_init_heap( FusionSHM  *shm,
      fchmod( fd, 0660 );
      ftruncate( fd, size );
 
-     D_DEBUG_AT( Fusion_SHMHeap, "  -> mmaping shared memory file... (%d bytes)\n", size );
+     D_DEBUG_AT( Fusion_SHMHeap, "  -> mmaping shared memory file... (%p %d bytes)\n", addr_base, size );
 
      /* map it shared */
      heap = mmap( addr_base, size + space, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0 );

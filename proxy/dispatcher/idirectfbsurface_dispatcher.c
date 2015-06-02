@@ -602,6 +602,21 @@ IDirectFBSurface_Dispatcher_StretchBlit( IDirectFBSurface   *thiz,
 }
 
 static DFBResult
+IDirectFBSurface_Dispatcher_BatchStretchBlit( IDirectFBSurface   *thiz,
+                                              IDirectFBSurface   *source,
+                                              DFBRectangle       *source_rects,
+                                              DFBRectangle       *destination_rects,
+                                              int                 num )
+{
+     DIRECT_INTERFACE_GET_DATA(IDirectFBSurface_Dispatcher)
+
+     if (!source)
+          return DFB_INVARG;
+
+     return DFB_UNIMPLEMENTED;
+}
+
+static DFBResult
 IDirectFBSurface_Dispatcher_TextureTriangles( IDirectFBSurface     *thiz,
                                               IDirectFBSurface     *source,
                                               const DFBVertex      *vertices,
@@ -1167,6 +1182,37 @@ Dispatch_StretchBlit( IDirectFBSurface *thiz, IDirectFBSurface *real,
           return ret;
 
      real->StretchBlit( real, surface, srect, drect );
+
+     return DFB_OK;
+}
+
+static DirectResult
+Dispatch_BatchStretchBlit( IDirectFBSurface *thiz, IDirectFBSurface *real,
+                           VoodooManager *manager, VoodooRequestMessage *msg )
+{
+     DirectResult         ret;
+     VoodooMessageParser  parser;
+     VoodooInstanceID     instance;
+     unsigned int         num;
+     const DFBRectangle  *source_rects;
+     const DFBRectangle  *dest_rects;
+     void                *surface;
+
+     DIRECT_INTERFACE_GET_DATA(IDirectFBSurface_Dispatcher)
+
+     VOODOO_PARSER_BEGIN( parser, msg );
+     VOODOO_PARSER_GET_ID( parser, instance );
+     VOODOO_PARSER_GET_UINT( parser, num );
+     VOODOO_PARSER_GET_DATA( parser, source_rects );
+     VOODOO_PARSER_GET_DATA( parser, dest_rects );
+     VOODOO_PARSER_END( parser );
+
+     ret = voodoo_manager_lookup_local( manager, instance, NULL, &surface );
+     if (ret)
+          return ret;
+
+     real->BatchStretchBlit( real, surface, (DFBRectangle *) source_rects,
+                             (DFBRectangle *) dest_rects, num );
 
      return DFB_OK;
 }
@@ -1766,6 +1812,9 @@ Dispatch( void *dispatcher, void *real, VoodooManager *manager, VoodooRequestMes
           case IDIRECTFBSURFACE_METHOD_ID_StretchBlit:
                return Dispatch_StretchBlit( dispatcher, real, manager, msg );
 
+          case IDIRECTFBSURFACE_METHOD_ID_BatchStretchBlit:
+               return Dispatch_BatchStretchBlit( dispatcher, real, manager, msg );
+
           case IDIRECTFBSURFACE_METHOD_ID_TextureTriangles:
                return Dispatch_TextureTriangles( dispatcher, real, manager, msg );
 
@@ -1899,6 +1948,7 @@ Construct( IDirectFBSurface *thiz,
      thiz->TileBlit = IDirectFBSurface_Dispatcher_TileBlit;
      thiz->BatchBlit = IDirectFBSurface_Dispatcher_BatchBlit;
      thiz->StretchBlit = IDirectFBSurface_Dispatcher_StretchBlit;
+     thiz->BatchStretchBlit = IDirectFBSurface_Dispatcher_BatchStretchBlit;
      thiz->TextureTriangles = IDirectFBSurface_Dispatcher_TextureTriangles;
 
      thiz->SetDrawingFlags = IDirectFBSurface_Dispatcher_SetDrawingFlags;

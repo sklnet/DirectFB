@@ -533,16 +533,20 @@ AM_CONDITIONAL(DIRECTFB_BUILD_PURE_VOODOO, test "$DIRECTFB_BUILD_PURE_VOODOO" = 
 
 AC_SUBST(DEP_VOODOO)
 
-dnl If we're not building a pure voodoo lib, we need the sqrt symbol
-dnl for src/media/idirectfbfont.c
-MEDIALIB=""
+dnl If we're not building a pure voodoo lib, we need sqrt sin cos for
+dnl various files
+LIBM=""
 if test "$enable_pure_voodoo" = "no"; then
-  AC_CHECK_LIB(m, sqrt,
-    MEDIALIB="-lm",
-    AC_MSG_ERROR([
-*** DirectFB requires libm.]))
+    safe_LIBS=$LIBS
+    AC_SEARCH_LIBS([sqrt], [m], [LIBM=$ac_cv_search_sqrt], [LIBM=no], [])
+    LIBS=$safe_LIBS
+    if test "$LIBM" = "none required" ; then
+        LIBM=""
+    elif test "$LIBM" = "no" ; then
+        AC_MSG_ERROR([*** DirectFB requires libm.])
+    fi
 fi
-AC_SUBST(MEDIALIB)
+AC_SUBST(LIBM)
 
 AM_CONDITIONAL(ENABLE_MULTI, test "$enable_multi" = "yes")
 
@@ -654,6 +658,30 @@ AM_CONDITIONAL(FBDEV_CORE, test "$enable_fbdev" = "yes")
 
 
 
+dnl Test for STMicroelectronics frame buffer system
+AC_ARG_ENABLE(stmfbdev,
+              AC_HELP_STRING([--enable-stmfbdev],
+                             [build with STMicroelectronics stmfb system support @<:@default=auto@:>@]),
+              [], [enable_stmfbdev=yes])
+
+if test "$have_linux" = "no"; then
+  enable_stmfbdev=no
+  AC_MSG_WARN([
+*** no linux kernel -- building without STMicroelectronics stmfb system support.])
+fi
+
+if test "$enable_stmfbdev" = "yes"; then
+  AC_CHECK_HEADER([linux/stmfb.h], [enable_stmfbdev=yes], [enable_stmfbdev=no],
+		  [[#include <linux/fb.h>]])
+  if test "$enable_stmfbdev" = "yes"; then
+    AC_DEFINE(LINUX_INPUT_USE_STMFBDEV,1,[Define to 1 if Linux Input driver should use stmfbdev system module for console keymap queries.])
+  fi
+fi
+
+AM_CONDITIONAL(STMFBDEV_CORE, test "$enable_stmfbdev" = "yes")
+
+
+
 dnl Test for SDL
 AC_ARG_ENABLE(sdl,
               AC_HELP_STRING([--enable-sdl],
@@ -728,14 +756,74 @@ fi
 AC_SUBST(SYSFS_LIBS)
 
 
+dnl test for MME
+MME=no
+mme_own_headers=no
+mme_own_transformers=no
+AC_ARG_ENABLE(mme,
+              AC_HELP_STRING([--enable-mme],
+			     [build with MME support @<:@default=yes@:>@]),
+              [], [enable_mme=yes])
+if test "$enable_mme" = "yes" ; then
+    MME=yes
+    AC_DEFINE(USE_MME, 1, [Define to 1 if MME should be used])
+
+    dnl use our own copy of mme.h and try to dlopen() libmme.so
+    AC_MSG_WARN([*** MME library not found. Will use dlopen().])
+    AC_DEFINE(MME_USE_DLOPEN, 1, [Define to 1 if dlopen() etc should be used for MME libraries])
+    LIBMME=
+
+    AC_CHECK_HEADER([mme.h], [mme_ok="yes"], [mme_ok="no"])
+    if test "$mme_ok" != "yes"; then
+        AC_MSG_WARN([*** MME header files not found. Will use own copy!])
+        AC_DEFINE(MME_USE_OWN_HEADERS, 1, [Define to 1 if builtin MME headers should be used])
+        mme_own_headers=yes
+    fi
+    AC_CHECK_HEADERS([JPEG_TransformerTypes.h JPEGDECHW_VideoTransformerTypes.h PNGDecode_interface.h RLEDecode_interface.h],
+		     [mme_ok="yes"], [mme_ok="no"])
+    if test "$mme_ok" != "yes"; then
+        AC_MSG_WARN([*** MME Transformer header files not found. Will use own copies!])
+        mme_own_transformers=yes
+    fi
+else
+    MME=no
+fi
+
+AM_CONDITIONAL(MME_USE_OWN_HEADERS, test "$mme_own_headers" = "yes")
+AM_CONDITIONAL(MME_USE_OWN_TRANSFORMERS, test "$mme_own_transformers" = "yes")
+AC_SUBST(LIBMME)
+
+
+dnl Test for RLE
+RLE=no
+RLE_HW=no
+AC_ARG_ENABLE(rle,
+              AC_HELP_STRING([--enable-rle],
+	                     [build RLE image provider @<:@default=yes@:>@]),
+              [], [enable_rle=yes])
+if test "$enable_rle" = "yes" ; then
+  RLE=yes
+  if test "$MME" = "yes" ; then
+    AC_DEFINE(RLE_PROVIDER_USE_MME, 1, [Define to 1 if RLE provider should use MME, too])
+    RLE_LIBMME=$LIBMME
+  fi
+fi
+AM_CONDITIONAL(RLE_PROVIDER, test "$RLE" = "yes")
+AC_SUBST(RLE_LIBMME)
+
 
 dnl Test for libjpeg
 JPEG=no
+JPEG_HW=no
 
 AC_ARG_ENABLE(jpeg,
               AC_HELP_STRING([--enable-jpeg],
                              [build JPEG image provider @<:@default=yes@:>@]),
               [], [enable_jpeg=yes])
+AC_ARG_ENABLE(hwjpeg,
+              AC_HELP_STRING([--enable-hwjpeg],
+                             [add hardware acceleration to JPEG image provider @<:@default=yes@:>@]),
+              [], [enable_hwjpeg=yes])
 
 if test "$enable_jpeg" = "yes"; then
   if test -z "$LIBJPEG"; then
@@ -764,11 +852,32 @@ if test "$enable_jpeg" = "yes"; then
   fi
 fi
 
-AM_CONDITIONAL(JPEG_PROVIDER, test "$JPEG" = "yes")
+if test "$enable_hwjpeg" != "no"; then
+  if test "$JPEG" = "yes"; then
+    if test "$MME" = "yes" ; then
+      AC_DEFINE(JPEG_PROVIDER_USE_MME, 1, [Define to 1 to enable hardware JPEG decoder])
+      JPEG_HW=yes
+      JPEG_LIBMME=$LIBMME
+    else
+      AC_MSG_WARN([*** MME not found. Hardware JPEG image provider will not be built.])
+      JPEG_HW=no
+    fi
+  else
+    AC_MSG_WARN([*** JPEG decoding not enabled. Hardware JPEG image provider can not be built.])
+    JPEG_HW=no
+  fi
+else
+  JPEG_HW=no
+fi
 
-if test "$enable_jpeg" != "no" && test "$JPEG" != "yes"; then
-  jpeg_warning="
+AM_CONDITIONAL(JPEG_PROVIDER, test "$JPEG" = "yes")
+AM_CONDITIONAL(JPEG_PROVIDER_HW, test "$JPEG_HW" = "yes")
+
+if test "$JPEG" != "yes"; then
+  if test "$enable_jpeg" != "no" || test "$enable_hwjpeg" != "no" ; then
+    jpeg_warning="
 JPEG support is missing - many applications won't work correctly!"
+  fi
 fi
 
 
@@ -802,22 +911,49 @@ AC_SUBST(ZLIB_LIBS)
 
 dnl Test for libpng
 PNG=no
+PNG_HW=no
 
 AC_ARG_ENABLE(png,
               AC_HELP_STRING([--enable-png],
                              [build PNG image provider, @<:@default=yes@:>@]),
               [], [enable_png=yes])
+AC_ARG_ENABLE(hwpng,
+              AC_HELP_STRING([--enable-hwpng],
+	                     [add hardware acceleration to PNG image provider @<:@default=yes@:>@]),
+              [], enable_hwpng="yes")
+
 if test "$enable_png" = "yes"; then
   PKG_CHECK_MODULES([LIBPNG], [libpng >= 1.2.2], [PNG=yes], [PNG=no
     AC_MSG_WARN([*** PNG library not found. PNG image provider will not be built.])])
 fi
 
+if test "$enable_hwpng" != "no"; then
+  if test "$PNG" = "yes" ; then
+    if test "$MME" = "yes"; then
+      AC_DEFINE(PNG_PROVIDER_USE_MME, 1, [Define to 1 to enable hardware PNG decoder])
+      PNG_HW=yes
+      PNG_LIBMME=$LIBMME
+    else
+      AC_MSG_WARN([*** MME not found. Hardware PNG image provider will not be built.])
+      PNG_HW=no
+    fi
+  else
+    AC_MSG_WARN([*** PNG decoding not enabled. Hardware PNG image provider can not be built.])
+    PNG_HW=no
+  fi
+else
+  PNG_HW=no
+fi
+
 AM_CONDITIONAL(PNG_PROVIDER, test "$PNG" = "yes")
+AM_CONDITIONAL(PNG_PROVIDER_HW, test "$PNG_HW" = "yes")
 AM_CONDITIONAL(BUILD_DIRECTFB_CSOURCE, test "$PNG" = "yes")
 
-if test "$enable_png" != "no" && test "$PNG" != "yes"; then
-  png_warning="
+if test "$PNG" != "yes"; then
+  if test "$enable_png" != "no" || "$enable_hwpng" != "no" ; then
+    png_warning="
 PNG support is missing - many applications won't work correctly!"
+  fi
 fi
 
 
@@ -918,6 +1054,7 @@ radeon=no
 savage=no
 sh772x=no
 sis315=no
+stgfx=no
 tdfx=no
 unichrome=no
 vmware=no
@@ -932,7 +1069,7 @@ AC_ARG_WITH(gfxdrivers,
                            [drivers), none (builds none), ati128, cle266,]
                            [cyber5k, davinci, ep9x, gl, i810, i830, mach64,]
                            [matrox, neomagic, nsc, nvidia, omap, pxa3xx,]
-                           [radeon, savage, sh772x, sis315, tdfx, unichrome,]
+                           [radeon, savage, sh772x, sis315, stgfx, tdfx, unichrome,]
                            [vmware. @<:@default=all@:>@]),
             [gfxdrivers="$withval"], [gfxdrivers=all])
 if test "$gfxdrivers" = "all"; then
@@ -955,6 +1092,7 @@ if test "$gfxdrivers" = "all"; then
   checkfor_savage=yes
   checkfor_sh772x=yes
   checkfor_sis315=yes
+  checkfor_stgfx=yes
   checkfor_tdfx=yes
   checkfor_unichrome=yes
   checkfor_vmware=yes
@@ -1022,6 +1160,9 @@ else
                   ;;
           sis315)
                   checkfor_sis315=yes
+                  ;;
+          stgfx)
+                  checkfor_stgfx=yes
                   ;;
           tdfx)
                   checkfor_tdfx=yes
@@ -1127,6 +1268,11 @@ fi
 
 if test "$checkfor_sis315" = "yes"; then
   sis315=yes
+fi
+
+if test "$checkfor_stgfx" = "yes"; then
+  AC_CHECK_HEADER([linux/stmfb.h], [stgfx=yes], [stgfx=no],
+		  [[#include <linux/fb.h>]])
 fi
 
 if test "$checkfor_tdfx" = "yes"; then
@@ -1579,6 +1725,7 @@ AM_CONDITIONAL(GFX_RADEON, test "$radeon" = "yes")
 AM_CONDITIONAL(GFX_SAVAGE, test "$savage" = "yes")
 AM_CONDITIONAL(GFX_SH772X, test "$sh772x" = "yes")
 AM_CONDITIONAL(GFX_SIS315, test "$sis315" = "yes")
+AM_CONDITIONAL(GFX_STGFX, test "$stgfx" = "yes")
 AM_CONDITIONAL(GFX_TDFX, test "$tdfx" = "yes")
 AM_CONDITIONAL(GFX_UNICHROME, test "$unichrome" = "yes")
 AM_CONDITIONAL(GFX_VMWARE, test "$vmware" = "yes")
@@ -1650,9 +1797,12 @@ AC_SUBST(ZLIB_LIBS)
 AC_SUBST(GIF_PROVIDER)
 AC_SUBST(JPEG_PROVIDER)
 AC_SUBST(LIBJPEG)
+AC_SUBST(JPEG_LIBMME)
 AC_SUBST(PNG_PROVIDER)
 AC_SUBST(LIBPNG_CFLAGS)
 AC_SUBST(LIBPNG_LIBS)
+AC_SUBST(PNG_LIBMME)
+AC_SUBST(RLE_PROVIDER)
 AC_SUBST(FREETYPE_PROVIDER)
 AC_SUBST(FREETYPE_CFLAGS)
 AC_SUBST(FREETYPE_LIBS)
@@ -1721,6 +1871,7 @@ systems/x11/Makefile
 systems/osx/Makefile
 systems/sdl/Makefile
 systems/vnc/Makefile
+systems/stmfbdev/Makefile
 
 wm/Makefile
 wm/default/Makefile
@@ -1750,6 +1901,8 @@ gfxdrivers/radeon/Makefile
 gfxdrivers/savage/Makefile
 gfxdrivers/sh772x/Makefile
 gfxdrivers/sis315/Makefile
+gfxdrivers/stgfx/Makefile
+gfxdrivers/stgfx2/Makefile
 gfxdrivers/tdfx/Makefile
 gfxdrivers/unichrome/Makefile
 gfxdrivers/vmware/Makefile
@@ -1844,6 +1997,7 @@ Building System Modules:
   OSX support               $enable_osx                 $OSX_CFLAGS $OSX_LIBS
   SDL support               $enable_sdl                 $SDL_CFLAGS $SDL_LIBS
   VNC support               $enable_vnc                 $VNC_CFLAGS $VNC_LIBS
+  STM stmfb support         $enable_stmfbdev
 
 Building Window Manager Modules:
   Default                   yes
@@ -1852,7 +2006,11 @@ Building Window Manager Modules:
 Building Image Provider Modules:
   GIF                       $enable_gif 
   JPEG                      $JPEG                 $LIBJPEG
+    - hardware              $JPEG_HW                 $JPEG_LIBMME
   PNG                       $PNG                 $LIBPNG_CFLAGS $LIBPNG_LIBS
+    - hardware              $PNG_HW                 $PNG_LIBMME
+  RLE                       $RLE                 $RLE_LIBMME
+    - hardware              $RLE_HW
 
 Building Video Provider Modules:
   GIF                       $enable_gif
@@ -1881,6 +2039,7 @@ Building Graphics Drivers:
   Renesas SH7722/SH7723     $sh772x
   S3 Savage                 $savage
   SiS 315                   $sis315
+  STM Gamma/BDispII         $stgfx
   TI Davinci                $davinci
   TI OMAP                   $omap
   TVIA CyberPro             $cyber5k

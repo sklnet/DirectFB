@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdarg.h>
 #include <sys/time.h>
 
 #include <pthread.h>
@@ -56,11 +57,10 @@
 
 #include <misc/gfx_util.h>
 
-
 static DFBResult Probe( IDirectFBVideoProvider_ProbeContext *ctx );
 
 static DFBResult Construct( IDirectFBVideoProvider *thiz,
-                            IDirectFBDataBuffer    *buffer );
+                            ... );
 
 
 #include <direct/interface_implementation.h>
@@ -89,21 +89,29 @@ typedef struct {
 
      IDirectFBDataBuffer           *buffer;
      DFBBoolean                     seekable;
-     
+
      IDirectFBSurface              *destination;
      IDirectFBSurface_data         *dst_data;
      DFBRectangle                   dst_rect;
-     
-     u32                           *image;
-     
+
+     int                            direct;
+     int                            direct_clut8;
+
+     DFBColor                       palette[MAXCOLORMAPSIZE];
+
+     CoreSurface                   *decode_surface;
+     CoreSurfaceBufferLock          buffer_lock;
+
      DirectThread                  *thread;
      pthread_mutex_t                lock;
      pthread_cond_t                 cond;
-     
+
+     int                            paused;
+
      DFBVideoProviderStatus         status;
      DFBVideoProviderPlaybackFlags  flags;
      double                         speed;
-     
+
      unsigned int                   start_pos;
 
      char                           Version[4];
@@ -133,6 +141,8 @@ typedef struct {
 
      DVFrameCallback                callback;
      void                          *callback_ctx;
+
+     CoreDFB                       *core;
 } IDirectFBVideoProvider_GIF_data;
 
 #define GIFERRORMSG(x, ...) \
@@ -152,37 +162,38 @@ FetchData( IDirectFBDataBuffer *buffer, void *data, unsigned int len )
 
      do {
           unsigned int read = 0;
-          
+
           ret = buffer->WaitForData( buffer, len );
           if (ret == DFB_OK)
                ret = buffer->GetData( buffer, len, data, &read );
           if (ret)
                break;
-               
+
           data += read;
           len  -= read;
      } while (len);
-     
+
      return ret;
 }
 
 static int ReadColorMap( IDirectFBDataBuffer *buffer, int number,
-                         u8 buf[3][MAXCOLORMAPSIZE] )
+                         DFBColor palette[MAXCOLORMAPSIZE] )
 {
      int  i;
      u8   rgb[3*number];
-     
+
      if (FetchData( buffer, rgb, sizeof(rgb) )) {
           GIFERRORMSG("bad colormap");
           return -1;
      }
 
      for (i = 0; i < number; ++i) {
-          buf[CM_RED][i]   = rgb[i*3+0];
-          buf[CM_GREEN][i] = rgb[i*3+1];
-          buf[CM_BLUE][i]  = rgb[i*3+2];
+          palette[i].r = rgb[i*3+0];
+          palette[i].g = rgb[i*3+1];
+          palette[i].b = rgb[i*3+2];
+          palette[i].a = 0xff;
      }
-     
+
      return 0;
 }
 
@@ -401,14 +412,17 @@ static int LWZReadByte( IDirectFBVideoProvider_GIF_data *data, int flag, int inp
      return code;
 }
 
-static int ReadImage( IDirectFBVideoProvider_GIF_data *data, 
-                      int left, int top, int width, int height,
-                      u8 cmap[3][MAXCOLORMAPSIZE], bool interlace, bool ignore )
+static int ReadImage( IDirectFBVideoProvider_GIF_data *data,
+                      int left, int top, int width, int height, int pitch,
+                      DFBColor palette[MAXCOLORMAPSIZE], bool interlace, bool ignore )
 {
      u8   c;
      int  v;
-     int  xpos = 0, ypos = 0, pass = 0;
-     u32 *image, *dst;
+     int  xpos = 0;
+     int  ypos = 0;
+     int  pass = 0;
+     u32 *image = 0, *dst = 0;
+     u8  *lut_image = 0, *lut_dst = 0;
 
      /*
      **  Initialize the decompression routines
@@ -429,11 +443,11 @@ static int ReadImage( IDirectFBVideoProvider_GIF_data *data,
                ;
           return 0;
      }
-     
+
      switch (data->disposal) {
           case 2:
                GIFDEBUGMSG("restoring to background color...");
-               memset( data->image, 0, data->Width * data->Height * 4 );
+               //REMOVEME: memset( data->image, 0, data->Width * data->Height * 4 );
                break;
           case 3:
                GIFERRORMSG("restoring to previous frame is unsupported");
@@ -441,18 +455,26 @@ static int ReadImage( IDirectFBVideoProvider_GIF_data *data,
           default:
                break;
      }
-     
-     dst = image = data->image + (top * data->Width + left);
+
+     if (data->direct_clut8)
+          lut_dst = lut_image = (u8 *)(data->buffer_lock.addr) + (top * pitch + left);
+     else
+          dst = image = (u32 *)(data->buffer_lock.addr) + (top * (pitch >> 2) + left);
 
      GIFDEBUGMSG("reading %dx%d at %dx%d %sGIF image",
                  width, height, left, top, interlace ? " interlaced " : "" );
 
      while ((v = LWZReadByte( data, false, c )) >= 0 ) {
           if (v != data->transparent) {
-               dst[xpos] = (0xFF000000              |
-                            cmap[CM_RED][v]   << 16 |
-                            cmap[CM_GREEN][v] << 8  |
-                            cmap[CM_BLUE][v]);
+               if (data->direct_clut8) {
+                    lut_dst[xpos] = v;
+               }
+               else {
+                    dst[xpos] = (0xFF000000         |
+                                 palette[v].r << 16 |
+                                 palette[v].g << 8  |
+                                 palette[v].b);
+               }
           }
 
           ++xpos;
@@ -492,8 +514,14 @@ static int ReadImage( IDirectFBVideoProvider_GIF_data *data,
                else {
                     ++ypos;
                }
-               dst = image + ypos * data->Width;
-          } 
+
+               if (data->direct_clut8) {
+                    lut_dst = lut_image + ypos * pitch;
+               }
+               else {
+                    dst = image + ypos * (pitch >> 2);
+               }
+          }
           if (ypos >= height) {
                break;
           }
@@ -515,16 +543,13 @@ static void GIFReset( IDirectFBVideoProvider_GIF_data *data )
      data->delayTime   = 1000000; /* default: 1s */
      data->inputFlag   = -1;
      data->disposal    = 0;
-     
-     if (data->image)
-          memset( data->image, 0, data->Width*data->Height*4 );
 }
 
 static DFBResult GIFReadHeader( IDirectFBVideoProvider_GIF_data *data )
 {
      DFBResult ret;
      u8        buf[7];
-     
+
      ret = FetchData( data->buffer, buf, 6 );
      if (ret) {
           GIFERRORMSG("error reading header");
@@ -535,10 +560,10 @@ static DFBResult GIFReadHeader( IDirectFBVideoProvider_GIF_data *data )
           GIFERRORMSG("bad magic");
           return DFB_UNSUPPORTED;
      }
-     
+
      memcpy( data->Version, &buf[3], 3 );
      data->Version[3] = '\0';
-     
+
      ret = FetchData( data->buffer, buf, 7 );
      if (ret) {
           GIFERRORMSG("error reading screen descriptor");
@@ -557,63 +582,71 @@ static DFBResult GIFReadHeader( IDirectFBVideoProvider_GIF_data *data )
           data->AspectRatio = (data->Width << 8) / data->Height;
 
      if (BitSet(buf[4], LOCALCOLORMAP)) {    /* Global Colormap */
-          if (ReadColorMap( data->buffer, data->BitPixel, data->ColorMap )) {
+          if (ReadColorMap( data->buffer, data->BitPixel, data->palette )) {
                GIFERRORMSG("error reading global colormap");
                return DFB_FAILURE;
           }
      }
-     
+
      return DFB_OK;
 }
 
 static DFBResult GIFReadFrame( IDirectFBVideoProvider_GIF_data *data )
 {
-     u8    buf[16], c;
-     int   top, left;
-     int   width, height;
-     u8    localColorMap[3][MAXCOLORMAPSIZE];
-     bool  useGlobalColormap;
+     u8         buf[16], c;
+     int       top, left;
+     int       width, height;
+     DFBColor  local_palette[MAXCOLORMAPSIZE];
+     bool      useGlobalColormap;
 
      data->curbit = data->lastbit = data->done = data->last_byte = 0;
 
-     data->fresh = 
+     data->fresh =
      data->code_size = data->set_code_size =
-     data->max_code = data->max_code_size = 
+     data->max_code = data->max_code_size =
      data->firstcode = data->oldcode =
      data->clear_code = data->end_code = 0;
 
+     dfb_surface_lock_buffer(data->decode_surface, CSBR_FRONT,
+                             CSAID_CPU, CSAF_WRITE, &(data->buffer_lock));
+
      for (;;) {
           DFBResult ret;
-          
+
           ret = FetchData( data->buffer, &c, 1);
           if (ret) {
                GIFERRORMSG("EOF / read error on image data" );
+               dfb_surface_unlock_buffer(data->decode_surface, &(data->buffer_lock));
                return DFB_EOF;
           }
 
-          if (c == ';') /* GIF terminator */
+          if (c == ';') { /* GIF terminator */
+               dfb_surface_unlock_buffer(data->decode_surface, &(data->buffer_lock));
                return DFB_EOF;
+          }
 
           if (c == '!') { /* Extension */
                if (FetchData( data->buffer, &c, 1)) {
                     GIFERRORMSG("EOF / read error on extention function code");
+                    dfb_surface_unlock_buffer(data->decode_surface, &(data->buffer_lock));
                     return DFB_EOF;
                }
                DoExtension( data, c );
                continue;
-          } 
+          }
 
           if (c != ',') { /* Not a valid start character */
                GIFERRORMSG("bogus character 0x%02x, ignoring", (int) c );
                continue;
           }
-               
+
           ret = FetchData( data->buffer, buf, 9 );
           if (ret) {
                GIFERRORMSG("couldn't read left/top/width/height");
+               dfb_surface_unlock_buffer(data->decode_surface, &(data->buffer_lock));
                return ret;
           }
-               
+
           left   = LM_to_uint( buf[0], buf[1] );
           top    = LM_to_uint( buf[2], buf[3] );
           width  = LM_to_uint( buf[4], buf[5] );
@@ -623,21 +656,40 @@ static DFBResult GIFReadFrame( IDirectFBVideoProvider_GIF_data *data )
 
           if (!useGlobalColormap) {
                int bitPixel = 2 << (buf[8] & 0x07);
-               if (ReadColorMap( data->buffer, bitPixel, localColorMap ))
+               if (ReadColorMap( data->buffer, bitPixel, local_palette ))
                     GIFERRORMSG("error reading local colormap");
+
+               if (data->direct_clut8) {
+                   IDirectFBPalette *palette;
+
+                   data->destination->GetPalette (data->destination, &palette);
+                   palette->SetEntries (palette, local_palette, data->BitPixel, 0);
+                   palette->Release(palette);
+               }
+          } else {
+               if (data->direct_clut8) {
+                   IDirectFBPalette *palette;
+
+                   data->destination->GetPalette (data->destination, &palette);
+                   palette->SetEntries (palette, data->palette, data->BitPixel, 0);
+                   palette->Release(palette);
+               }
           }
 
           if (ReadImage( data, left, top, width, height,
-                        (useGlobalColormap ?
-                         data->ColorMap : localColorMap),
+                         data->buffer_lock.pitch,
+                         (useGlobalColormap ?
+                         data->palette : local_palette),
                          BitSet( buf[8], INTERLACE ), 0 )) {
                GIFERRORMSG("error reading image");
+               dfb_surface_unlock_buffer(data->decode_surface, &(data->buffer_lock));
                return DFB_FAILURE;
           }
-          
+
           break;
      }
-     
+
+     dfb_surface_unlock_buffer(data->decode_surface, &(data->buffer_lock));
      return DFB_OK;
 }
 
@@ -647,18 +699,37 @@ static void
 IDirectFBVideoProvider_GIF_Destruct( IDirectFBVideoProvider *thiz )
 {
      IDirectFBVideoProvider_GIF_data *data = thiz->priv;
-     
+
      thiz->Stop( thiz );
-     
-     if (data->image)
-          D_FREE( data->image );
-     
+
      if (data->buffer)
           data->buffer->Release( data->buffer );
-    
+
+     if (data->thread) {
+          direct_thread_cancel( data->thread );
+          pthread_mutex_lock( &data->lock );
+          pthread_cond_signal( &data->cond );
+          pthread_mutex_unlock( &data->lock );
+          direct_thread_join( data->thread );
+          direct_thread_destroy( data->thread );
+          data->thread = NULL;
+     }
+
+     if (data->destination) {
+          data->destination->Release( data->destination );
+          data->destination = NULL;
+          data->dst_data    = NULL;
+     }
+
+     if (data->decode_surface && !data->direct) {
+          dfb_surface_destroy_buffers(data->decode_surface);
+          dfb_surface_unref(data->decode_surface);
+          data->decode_surface = 0;
+     }
+
      pthread_cond_destroy( &data->cond );
      pthread_mutex_destroy( &data->lock );
-          
+
      DIRECT_DEALLOCATE_INTERFACE( thiz );
 }
 
@@ -688,12 +759,12 @@ IDirectFBVideoProvider_GIF_GetCapabilities( IDirectFBVideoProvider       *thiz,
                                             DFBVideoProviderCapabilities *caps )
 {
      DIRECT_INTERFACE_GET_DATA( IDirectFBVideoProvider_GIF )
-     
+
      if (!caps)
           return DFB_INVARG;
-          
+
      *caps = DVCAPS_BASIC | DVCAPS_SCALE | DVCAPS_SPEED;
-     
+
      return DFB_OK;
 }
 
@@ -702,15 +773,30 @@ IDirectFBVideoProvider_GIF_GetSurfaceDescription( IDirectFBVideoProvider *thiz,
                                                   DFBSurfaceDescription  *desc )
 {
      DIRECT_INTERFACE_GET_DATA( IDirectFBVideoProvider_GIF )
-     
+
      if (!desc)
           return DFB_INVARG;
-          
-     desc->flags       = DSDESC_WIDTH | DSDESC_HEIGHT | DSDESC_PIXELFORMAT;
-     desc->width       = data->Width;
-     desc->height      = data->Height;
-     desc->pixelformat = DSPF_ARGB;
-     
+
+     desc->width = data->Width;
+     desc->height = data->Height;
+
+     switch (data->BitPixel) {
+     case 256:
+          desc->pixelformat = DSPF_LUT8;
+          break;
+     case 4:
+          desc->pixelformat = DSPF_LUT2;
+          break;
+#if DSPF_LUT4_PATCH_INTEGRATED
+     case 16:
+          desc->pixelformat = DSPF_LUT4;
+          break;
+#endif
+     default:
+         desc->pixelformat = DSPF_ARGB;
+         break;
+     }
+
      return DFB_OK;
 }
 
@@ -719,22 +805,22 @@ IDirectFBVideoProvider_GIF_GetStreamDescription( IDirectFBVideoProvider *thiz,
                                                  DFBStreamDescription   *desc )
 {
      DIRECT_INTERFACE_GET_DATA( IDirectFBVideoProvider_GIF )
-     
+
      if (!desc)
           return DFB_INVARG;
-          
+
      desc->caps = DVSCAPS_VIDEO;
-     
+
      snprintf( desc->video.encoding,
                DFB_STREAM_DESC_ENCODING_LENGTH, "GIF %s", data->Version );
      desc->video.framerate = 0;
      desc->video.aspect    = (double)data->AspectRatio/256.0;
      desc->video.bitrate   = 0;
-     
-     desc->title[0] = desc->author[0] = 
+
+     desc->title[0] = desc->author[0] =
      desc->album[0] = desc->genre[0] = desc->comment[0] = 0;
      desc->year = 0;
-     
+
      return DFB_OK;
 }
 
@@ -742,25 +828,23 @@ static void*
 GIFVideo( DirectThread *self, void *arg )
 {
      IDirectFBVideoProvider_GIF_data *data = arg;
-     
+
      pthread_setcancelstate( PTHREAD_CANCEL_DISABLE, NULL );
-     
+
      while (!direct_thread_is_canceled( self )) {
           DFBResult              ret;
           DFBRectangle           rect;
           DFBRegion              clip;
-          CoreSurface           *surface;
-          CoreSurfaceBufferLock  lock;
-          
+
           pthread_mutex_lock( &data->lock );
-          
+
           if (direct_thread_is_canceled( self )) {
                pthread_mutex_unlock( &data->lock );
                break;
           }
-          
+
           ret = GIFReadFrame( data );
-          if (ret) { 
+          if (ret) {
                if (ret == DFB_EOF) {
                     GIFReset( data );
                     if (data->flags & DVPLAY_LOOPING) {
@@ -775,50 +859,77 @@ GIFVideo( DirectThread *self, void *arg )
                pthread_mutex_unlock( &data->lock );
                continue;
           }
-          
-          rect = (data->dst_rect.w == 0)
-                 ? data->dst_data->area.wanted : data->dst_rect;          
-          dfb_region_from_rectangle( &clip, &data->dst_data->area.current );
-          
-          surface = data->dst_data->surface;
-          D_MAGIC_ASSERT( surface, CoreSurface );
 
-          if (dfb_rectangle_region_intersects( &rect, &clip ) &&
-              dfb_surface_lock_buffer( surface, CSBR_BACK, CSAID_CPU, CSAF_WRITE, &lock ) == DFB_OK)
-          {
-               dfb_scale_linear_32( data->image, data->Width, data->Height,
-                                    lock.addr, lock.pitch, &rect, data->dst_data->surface, &clip );
-                                    
-               dfb_surface_unlock_buffer( surface, &lock );
-               
-               if (data->callback)
-                    data->callback( data->callback_ctx );
+          rect = (data->dst_rect.w == 0)
+                 ? data->dst_data->area.wanted : data->dst_rect;
+
+          dfb_region_from_rectangle( &clip, &data->dst_data->area.current );
+
+          if (!data->direct) {
+               CardState              state;
+               DFBRectangle           srect;
+               CoreSurface           *dst_surface;
+
+               dst_surface = data->dst_data->surface;
+
+               dfb_state_init(&state, data->core);
+
+               state.modified |= SMF_CLIP;
+
+               state.clip.x1 = rect.x;
+               state.clip.y1 = rect.y;
+               state.clip.x2 = rect.x + rect.w - 1;
+               state.clip.y2 = rect.y + rect.h - 1;
+
+               srect.x = 0;
+               srect.y = 0;
+               srect.w = data->Width;
+               srect.h = data->Height;
+
+               dfb_state_set_source(&state, data->decode_surface);
+               dfb_state_set_destination(&state, dst_surface);
+               dfb_gfxcard_stretchblit(&srect, &rect, &state);
+
+               dfb_state_set_source(&state, NULL);
+               dfb_state_set_destination(&state, NULL);
+
+               dfb_state_destroy(&state);
           }
 
-          if (!data->speed) {
+          if (data->callback)
+               data->callback( data->callback_ctx );
+
+          if (!(data->flags & DVPLAY_PACED))
+          {
+               if (!data->speed)
+                    pthread_cond_wait( &data->cond, &data->lock );
+               else {
+                    struct timespec ts;
+                    struct timeval  tv;
+                    unsigned long   us;
+
+                    gettimeofday( &tv, NULL );
+
+                    us = data->delayTime;
+                    if (data->speed != 1.0)
+                         us = ((double)us / data->speed + .5);
+                    us += tv.tv_usec;
+
+                    ts.tv_sec  = tv.tv_sec + us/1000000;
+                    ts.tv_nsec = (us%1000000) * 1000;
+
+                    pthread_cond_timedwait( &data->cond, &data->lock, &ts );
+               }
+          } else {
+               data->status = DVSTATE_STOP;
+
+               // Wait for the next call to PlayTo() to resume decoding
                pthread_cond_wait( &data->cond, &data->lock );
           }
-          else {
-               struct timespec ts;
-               struct timeval  tv;
-               unsigned long   us;
-               
-               gettimeofday( &tv, NULL );
-                    
-               us = data->delayTime;
-               if (data->speed != 1.0)
-                    us = ((double)us / data->speed + .5);
-               us += tv.tv_usec;                 
-                    
-               ts.tv_sec  = tv.tv_sec + us/1000000;
-               ts.tv_nsec = (us%1000000) * 1000;
-                    
-               pthread_cond_timedwait( &data->cond, &data->lock, &ts );
-          }
-          
+
           pthread_mutex_unlock( &data->lock );
      }
-     
+
      return (void*)0;
 }
 
@@ -832,27 +943,31 @@ IDirectFBVideoProvider_GIF_PlayTo( IDirectFBVideoProvider *thiz,
      IDirectFBSurface_data *dst_data;
      DFBRectangle           rect = { 0, 0, 0, 0 };
      DFBResult              ret;
-     
+
+     CoreSurface           *dst_surface;
+
      DIRECT_INTERFACE_GET_DATA( IDirectFBVideoProvider_GIF )
-     
+
      if (!destination)
           return DFB_INVARG;
-          
+
      dst_data = destination->priv;
      if (!dst_data || !dst_data->surface)
           return DFB_DESTROYED;
-          
+
+     dst_surface = dst_data->surface;
+
      if (dest_rect) {
           if (dest_rect->w < 1 || dest_rect->h < 1)
                return DFB_INVARG;
-          
+
           rect = *dest_rect;
           rect.x += dst_data->area.wanted.x;
           rect.y += dst_data->area.wanted.y;
-     }          
-     
+     }
+
      pthread_mutex_lock( &data->lock );
-     
+
      if (data->status == DVSTATE_FINISHED) {
           ret = data->buffer->SeekTo( data->buffer, data->start_pos );
           if (ret) {
@@ -861,33 +976,56 @@ IDirectFBVideoProvider_GIF_PlayTo( IDirectFBVideoProvider *thiz,
           }
      }
      data->status = DVSTATE_PLAY;
-     
-     if (!data->image) {          
-          data->image = D_CALLOC( 4, data->Width * data->Height );
-          if (!data->image) {
-               pthread_mutex_unlock( &data->lock );
-               return D_OOM();
-          }
-     }
-     
+
      if (data->destination)
           data->destination->Release( data->destination );
-     
+
      destination->AddRef( destination );
      data->destination = destination;
      data->dst_data    = dst_data;
      data->dst_rect    = rect;
-     
+
+     data->direct = (dst_surface->config.format == DSPF_LUT8
+                     || dst_surface->config.format == DSPF_ARGB)
+                    && (dst_surface->config.size.w == data->Width)
+                    && (dst_surface->config.size.h == data->Height);
+
      data->callback     = callback;
      data->callback_ctx = ctx;
-     
+
+     if (data->direct) {
+          data->decode_surface = dst_data->surface;
+          if (dst_surface->config.format == DSPF_LUT8)
+               data->direct_clut8 = 1;
+     }
+     else {
+          if (!data->decode_surface) {
+               ret = dfb_surface_create_simple (data->core, data->Width,
+                                                data->Height, DSPF_ARGB,
+                                                DSCAPS_VIDEOONLY, CSTF_NONE, 0,
+                                                NULL, &(data->decode_surface));
+               if (ret != DFB_OK) {
+                    pthread_mutex_unlock( &data->lock );
+                    return ret;
+               }
+          }
+     }
+
+     // Playback has already been started by a previous call to PlayTo()
+     if (data->thread && (data->flags & DVPLAY_PACED)) {
+          data->paused = 0;
+          pthread_mutex_unlock( &data->lock );
+          pthread_cond_signal( &data->cond );
+          return DFB_OK;
+     }
+
      if (!data->thread) {
           data->thread = direct_thread_create( DTT_DEFAULT, GIFVideo,
                                               (void*)data, "GIF Video" );
      }
-     
+
      pthread_mutex_unlock( &data->lock );
-     
+
      return DFB_OK;
 }
 
@@ -895,25 +1033,29 @@ static DFBResult
 IDirectFBVideoProvider_GIF_Stop( IDirectFBVideoProvider *thiz )
 {
      DIRECT_INTERFACE_GET_DATA( IDirectFBVideoProvider_GIF )
-     
-     if (data->thread) {
-          direct_thread_cancel( data->thread );
-          pthread_mutex_lock( &data->lock );
-          pthread_cond_signal( &data->cond );
-          pthread_mutex_unlock( &data->lock );
-          direct_thread_join( data->thread );
-          direct_thread_destroy( data->thread );
-          data->thread = NULL;
+
+     if (data->flags & DVPLAY_PACED)
+        data->paused = 1;
+     else {
+          if (data->thread) {
+               direct_thread_cancel( data->thread );
+               pthread_mutex_lock( &data->lock );
+               pthread_cond_signal( &data->cond );
+               pthread_mutex_unlock( &data->lock );
+               direct_thread_join( data->thread );
+               direct_thread_destroy( data->thread );
+               data->thread = NULL;
+          }
+
+          if (data->destination) {
+               data->destination->Release( data->destination );
+               data->destination = NULL;
+               data->dst_data = NULL;
+          }
+
+          data->status = DVSTATE_STOP;
      }
-     
-     if (data->destination) {
-          data->destination->Release( data->destination );
-          data->destination = NULL;
-          data->dst_data    = NULL;
-     }
-     
-     data->status = DVSTATE_STOP;
-     
+
      return DFB_OK;
 }
 
@@ -922,12 +1064,12 @@ IDirectFBVideoProvider_GIF_GetStatus( IDirectFBVideoProvider *thiz,
                                       DFBVideoProviderStatus *status )
 {
      DIRECT_INTERFACE_GET_DATA( IDirectFBVideoProvider_GIF )
-     
+
      if (!status)
           return DFB_INVARG;
-          
+
      *status = data->status;
-     
+
      return DFB_OK;
 }
 
@@ -936,10 +1078,10 @@ IDirectFBVideoProvider_GIF_SeekTo( IDirectFBVideoProvider *thiz,
                                    double                  seconds )
 {
      DIRECT_INTERFACE_GET_DATA( IDirectFBVideoProvider_GIF )
-     
+
      if (seconds < 0.0)
           return DFB_INVARG;
-          
+
      return DFB_UNSUPPORTED;
 }
 
@@ -948,12 +1090,12 @@ IDirectFBVideoProvider_GIF_GetPos( IDirectFBVideoProvider *thiz,
                                    double                 *seconds )
 {
      DIRECT_INTERFACE_GET_DATA( IDirectFBVideoProvider_GIF )
-     
+
      if (!seconds)
           return DFB_INVARG;
-          
+
      *seconds = 0.0;
-          
+
      return DFB_UNSUPPORTED;
 }
 
@@ -962,12 +1104,12 @@ IDirectFBVideoProvider_GIF_GetLength( IDirectFBVideoProvider *thiz,
                                       double                 *seconds )
 {
      DIRECT_INTERFACE_GET_DATA( IDirectFBVideoProvider_GIF )
-     
+
      if (!seconds)
           return DFB_INVARG;
-          
+
      *seconds = 0.0;
-          
+
      return DFB_UNSUPPORTED;
 }
 
@@ -976,15 +1118,15 @@ IDirectFBVideoProvider_GIF_SetPlaybackFlags( IDirectFBVideoProvider        *thiz
                                              DFBVideoProviderPlaybackFlags  flags )
 {
      DIRECT_INTERFACE_GET_DATA( IDirectFBVideoProvider_GIF )
-     
-     if (flags & ~DVPLAY_LOOPING)
+
+     if (flags & ~(DVPLAY_LOOPING | DVPLAY_PACED))
           return DFB_UNSUPPORTED;
-          
+
      if (flags & DVPLAY_LOOPING && !data->seekable)
           return DFB_UNSUPPORTED;
-          
+
      data->flags = flags;
-     
+
      return DFB_OK;
 }
 
@@ -993,17 +1135,17 @@ IDirectFBVideoProvider_GIF_SetSpeed( IDirectFBVideoProvider *thiz,
                                      double                  multiplier )
 {
      DIRECT_INTERFACE_GET_DATA( IDirectFBVideoProvider_GIF )
-     
+
      if (multiplier < 0.0)
           return DFB_INVARG;
-    
+
      if (data->speed != multiplier) {
-          pthread_mutex_lock( &data->lock ); 
+          pthread_mutex_lock( &data->lock );
           data->speed = multiplier;
           pthread_cond_signal( &data->cond );
           pthread_mutex_unlock( &data->lock );
      }
-     
+
      return DFB_OK;
 }
 
@@ -1012,12 +1154,12 @@ IDirectFBVideoProvider_GIF_GetSpeed( IDirectFBVideoProvider *thiz,
                                      double                 *multiplier )
 {
      DIRECT_INTERFACE_GET_DATA( IDirectFBVideoProvider_GIF )
-     
+
      if (!multiplier)
           return DFB_INVARG;
-          
+
      *multiplier = data->speed;
-     
+
      return DFB_OK;
 }
 
@@ -1027,38 +1169,51 @@ Probe( IDirectFBVideoProvider_ProbeContext *ctx )
 {
      if (!memcmp( ctx->header, "GIF89", 5 ))
           return DFB_OK;
-          
+
      return DFB_UNSUPPORTED;
 }
 
 static DFBResult
 Construct( IDirectFBVideoProvider *thiz,
-           IDirectFBDataBuffer    *buffer )
+           ... )
 {
      DFBResult ret;
 
+     IDirectFBDataBuffer *buffer;
+     CoreDFB             *core;
+     va_list              tag;
+
      DIRECT_ALLOCATE_INTERFACE_DATA( thiz, IDirectFBVideoProvider_GIF )
 
+     va_start( tag, thiz );
+     buffer = va_arg( tag, IDirectFBDataBuffer * );
+     core = va_arg( tag, CoreDFB * );
+     va_end( tag );
+
+     data->core   = core;
      data->ref    = 1;
      data->status = DVSTATE_STOP;
      data->buffer = buffer;
      data->speed  = 1.0;
-     
+
      buffer->AddRef( buffer );
      data->seekable = (buffer->SeekTo( buffer, 0 ) == DFB_OK);
-     
+
      GIFReset( data );
      ret = GIFReadHeader( data );
      if (ret) {
           IDirectFBVideoProvider_GIF_Destruct( thiz );
           return ret;
      }
-     
+
      data->buffer->GetPosition( data->buffer, &data->start_pos );
-     
-     direct_util_recursive_pthread_mutex_init( &data->lock );
+
+     pthread_mutex_init( &data->lock, NULL );
      pthread_cond_init( &data->cond, NULL );
-     
+
+     data->paused = 0;
+     data->decode_surface = 0;
+
      thiz->AddRef                = IDirectFBVideoProvider_GIF_AddRef;
      thiz->Release               = IDirectFBVideoProvider_GIF_Release;
      thiz->GetCapabilities       = IDirectFBVideoProvider_GIF_GetCapabilities;
@@ -1073,6 +1228,6 @@ Construct( IDirectFBVideoProvider *thiz,
      thiz->SetPlaybackFlags      = IDirectFBVideoProvider_GIF_SetPlaybackFlags;
      thiz->SetSpeed              = IDirectFBVideoProvider_GIF_SetSpeed;
      thiz->GetSpeed              = IDirectFBVideoProvider_GIF_GetSpeed;
-     
+
      return DFB_OK;
 }

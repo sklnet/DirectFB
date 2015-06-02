@@ -88,8 +88,11 @@ void dfb_rectangle_union ( DFBRectangle       *rect1,
           }                                  \
      } while (0)
 
+#define DFB_INT_VALf(x)                      (x) >> 16, (int) (((((long long) x) & 0xffff) * 1000000) / DFB_FIXED_POINT_ONE)
 #define DFB_RECTANGLE_VALS(r)                (r)->x, (r)->y, (r)->w, (r)->h
+#define DFB_RECTANGLE_VALSf(r)               DFB_INT_VALf((r)->x), DFB_INT_VALf((r)->y), DFB_INT_VALf((r)->w), DFB_INT_VALf((r)->h)
 #define DFB_RECTANGLE_VALS_FROM_REGION(r)    (r)->x1, (r)->y1, (r)->x2-(r)->x1+1, (r)->y2-(r)->y1+1
+#define DFB_RECTANGLE_VALSf_FROM_REGION(r)   DFB_INT_VALf((r)->x1), DFB_INT_VALf((r)->y1), DFB_INT_VALf((r)->x2-(r)->x1+DFB_FIXED_POINT_ONE), DFB_INT_VALf((r)->y2-(r)->y1+DFB_FIXED_POINT_ONE)
 #define DFB_RECTANGLE_INIT_FROM_REGION(r)    (DFBRectangle){ DFB_RECTANGLE_VALS_FROM_REGION(r) }
 #define DFB_RECTANGLE_CONTAINS_POINT(r,X,Y)  (((X) >= (r)->x) && ((X) < (r)->x + (r)->w) && \
                                               ((Y) >= (r)->y) && ((Y) < (r)->y + (r)->h))
@@ -134,6 +137,7 @@ void dfb_rectangle_union ( DFBRectangle       *rect1,
 
 
 #define DFB_REGION_VALS(r)                   (r)->x1, (r)->y1, (r)->x2, (r)->y2
+#define DFB_REGION_VALSf(r)                  DFB_INT_VALf((r)->x1), DFB_INT_VALf((r)->y1), DFB_INT_VALf((r)->x2), DFB_INT_VALf((r)->y2)
 
 #define DFB_REGION_VALS_FROM_DIMENSION(d)    0, 0, (d)->w-1, (d)->h-1
 #define DFB_REGION_INIT_FROM_DIMENSION(d)    (DFBRegion){ DFB_REGION_VALS_FROM_DIMENSION(d) }
@@ -395,6 +399,82 @@ bool dfb_line_segment_intersect( const DFBRegion *line,
                                  int             *x,
                                  int             *y );
 
+
+static inline void dfb_rectangle_upscale( DFBRectangle *rect )
+{
+     rect->x *= DFB_FIXED_POINT_ONE;
+     rect->y *= DFB_FIXED_POINT_ONE;
+     rect->w *= DFB_FIXED_POINT_ONE;
+     rect->h *= DFB_FIXED_POINT_ONE;
+}
+
+static inline void dfb_rectangle_downscale( DFBRectangle *rect )
+{
+     rect->x /= DFB_FIXED_POINT_ONE;
+     rect->y /= DFB_FIXED_POINT_ONE;
+     rect->w /= DFB_FIXED_POINT_ONE;
+     rect->h /= DFB_FIXED_POINT_ONE;
+}
+
+static inline void dfb_region_upscale( DFBRegion *region )
+{
+     region->x1 *= DFB_FIXED_POINT_ONE;
+     region->y1 *= DFB_FIXED_POINT_ONE;
+     region->x2 *= DFB_FIXED_POINT_ONE;
+     region->y2 *= DFB_FIXED_POINT_ONE;
+}
+
+static inline void dfb_region_downscale( DFBRegion *region )
+{
+     region->x1 /= DFB_FIXED_POINT_ONE;
+     region->y1 /= DFB_FIXED_POINT_ONE;
+     region->x2 /= DFB_FIXED_POINT_ONE;
+     region->y2 /= DFB_FIXED_POINT_ONE;
+}
+
+static inline void dfb_triangle_upscale( DFBTriangle *tri )
+{
+     tri->x1 *= DFB_FIXED_POINT_ONE;
+     tri->y1 *= DFB_FIXED_POINT_ONE;
+     tri->x2 *= DFB_FIXED_POINT_ONE;
+     tri->y2 *= DFB_FIXED_POINT_ONE;
+     tri->x3 *= DFB_FIXED_POINT_ONE;
+     tri->y3 *= DFB_FIXED_POINT_ONE;
+}
+
+static inline void dfb_triangle_downscale( DFBTriangle *tri )
+{
+     tri->x1 /= DFB_FIXED_POINT_ONE;
+     tri->y1 /= DFB_FIXED_POINT_ONE;
+     tri->x2 /= DFB_FIXED_POINT_ONE;
+     tri->y2 /= DFB_FIXED_POINT_ONE;
+     tri->x3 /= DFB_FIXED_POINT_ONE;
+     tri->y3 /= DFB_FIXED_POINT_ONE;
+}
+
+static inline void dfb_point_upscale( DFBPoint *point )
+{
+     point->x *= DFB_FIXED_POINT_ONE;
+     point->y *= DFB_FIXED_POINT_ONE;
+}
+
+static inline void dfb_point_downscale( DFBPoint *point )
+{
+     point->x /= DFB_FIXED_POINT_ONE;
+     point->y /= DFB_FIXED_POINT_ONE;
+}
+
+static inline void dfb_dimension_upscale( DFBDimension *dim )
+{
+     dim->w *= DFB_FIXED_POINT_ONE;
+     dim->h *= DFB_FIXED_POINT_ONE;
+}
+
+static inline void dfb_dimension_downscale( DFBDimension *dim )
+{
+     dim->w /= DFB_FIXED_POINT_ONE;
+     dim->h /= DFB_FIXED_POINT_ONE;
+}
 
 /*
  * Copied declaration of DFBPixelFormatName from directfb_strings.h

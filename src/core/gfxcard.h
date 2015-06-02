@@ -381,6 +381,11 @@ void dfb_gfxcard_stretchblit            ( DFBRectangle         *srect,
                                           DFBRectangle         *drect,
                                           CardState            *state );
 
+void dfb_gfxcard_batchstretchblit       ( DFBRectangle         *srects,
+                                          DFBRectangle         *drects,
+                                          int                   num,
+                                          CardState            *state );
+
 void dfb_gfxcard_texture_triangles      ( DFBVertex            *vertices,
                                           int                   num,
                                           DFBTriangleFormation  formation,

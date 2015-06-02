@@ -123,9 +123,10 @@ dfb_clip_line( const DFBRegion *clip, DFBRegion *line )
 }
 
 DFBEdgeFlags
-dfb_clip_edges( const DFBRegion *clip, DFBRectangle *rect )
+dfb_clip_edges_f( const DFBRegion *clip, DFBRectangle *rect, bool fixedpoint )
 {
      DFBEdgeFlags flags = DFEF_ALL;
+     int offset = fixedpoint ? DFB_FIXED_POINT_ONE : 1;
 
      if ((clip->x1 >= rect->x + rect->w) ||
          (clip->x2 < rect->x) ||
@@ -147,14 +148,14 @@ dfb_clip_edges( const DFBRegion *clip, DFBRectangle *rect )
           flags &= ~DFEF_TOP;
      }
 
-     if (clip->x2 < rect->x + rect->w - 1) {
-          rect->w = clip->x2 - rect->x + 1;
+     if (clip->x2 < rect->x + rect->w - offset) {
+          rect->w = clip->x2 - rect->x + offset;
 
           flags &= ~DFEF_RIGHT;
      }
 
-     if (clip->y2 < rect->y + rect->h - 1) {
-          rect->h = clip->y2 - rect->y + 1;
+     if (clip->y2 < rect->y + rect->h - offset) {
+          rect->h = clip->y2 - rect->y + offset;
 
           flags &= ~DFEF_BOTTOM;
      }
@@ -162,9 +163,17 @@ dfb_clip_edges( const DFBRegion *clip, DFBRectangle *rect )
      return flags;
 }
 
-DFBBoolean
-dfb_clip_rectangle( const DFBRegion *clip, DFBRectangle *rect )
+DFBEdgeFlags
+dfb_clip_edges( const DFBRegion *clip, DFBRectangle *rect )
 {
+     return dfb_clip_edges_f( clip, rect, false );
+}
+
+DFBBoolean
+dfb_clip_rectangle_f( const DFBRegion *clip, DFBRectangle *rect, bool fixedpoint )
+{
+     int offset = fixedpoint ? DFB_FIXED_POINT_ONE : 1;
+
      if ((clip->x1 >= rect->x + rect->w) ||
          (clip->x2 < rect->x) ||
          (clip->y1 >= rect->y + rect->h) ||
@@ -181,13 +190,19 @@ dfb_clip_rectangle( const DFBRegion *clip, DFBRectangle *rect )
           rect->y = clip->y1;
      }
 
-     if (clip->x2 < rect->x + rect->w - 1)
-          rect->w = clip->x2 - rect->x + 1;
+     if (clip->x2 < rect->x + rect->w - offset)
+          rect->w = clip->x2 - rect->x + offset;
 
-     if (clip->y2 < rect->y + rect->h - 1)
-          rect->h = clip->y2 - rect->y + 1;
+     if (clip->y2 < rect->y + rect->h - offset)
+          rect->h = clip->y2 - rect->y + offset;
 
      return DFB_TRUE;
+}
+
+DFBBoolean
+dfb_clip_rectangle( const DFBRegion *clip, DFBRectangle *rect )
+{
+     return dfb_clip_rectangle_f( clip, rect, false );
 }
 
 DFBBoolean
@@ -329,38 +344,47 @@ dfb_clip_triangle( const DFBRegion *clip, const DFBTriangle *tri, DFBPoint p[6],
 
 
 void
-dfb_clip_blit( const DFBRegion *clip,
-               DFBRectangle *srect, int *dx, int *dy )
+dfb_clip_blit_f( const DFBRegion *clip,
+                 DFBRectangle *srect, int *dx, int *dy, bool fixedpoint )
 {
+     int offset = fixedpoint ? DFB_FIXED_POINT_ONE : 1;
+
      if (clip->x1 > *dx ) {
-          srect->w = MIN( (clip->x2 - clip->x1) + 1,
+          srect->w = MIN( (clip->x2 - clip->x1) + offset,
                     (*dx + srect->w) - clip->x1);
 
           srect->x+= clip->x1 - *dx;
           *dx = clip->x1;
      }
-     else if (clip->x2 < *dx + srect->w - 1) {
-          srect->w = clip->x2 - *dx + 1;
+     else if (clip->x2 < *dx + srect->w - offset) {
+          srect->w = clip->x2 - *dx + offset;
      }
 
      if (clip->y1 > *dy ) {
-          srect->h = MIN( (clip->y2 - clip->y1) + 1,
+          srect->h = MIN( (clip->y2 - clip->y1) + offset,
                           (*dy + srect->h) - clip->y1);
           srect->y+= clip->y1 - *dy;
           *dy = clip->y1;
      }
-     else if (clip->y2 < *dy + srect->h - 1) {
-          srect->h = clip->y2 - *dy + 1;
+     else if (clip->y2 < *dy + srect->h - offset) {
+          srect->h = clip->y2 - *dy + offset;
      }
 }
 
 void
-dfb_clip_stretchblit( const DFBRegion *clip,
-                      DFBRectangle *srect, DFBRectangle *drect )
+dfb_clip_blit( const DFBRegion *clip,
+               DFBRectangle *srect, int *dx, int *dy )
+{
+     dfb_clip_blit_f( clip, srect, dx, dy, false );
+}
+
+void
+dfb_clip_stretchblit_f( const DFBRegion *clip,
+                        DFBRectangle *srect, DFBRectangle *drect, bool fixedpoint )
 {
      DFBRectangle orig_dst = *drect;
 
-     dfb_clip_rectangle( clip, drect );
+     dfb_clip_rectangle_f( clip, drect, fixedpoint );
 
      if (drect->x != orig_dst.x)
           srect->x += (int)( (drect->x - orig_dst.x) *
@@ -377,3 +401,9 @@ dfb_clip_stretchblit( const DFBRegion *clip,
           srect->h = (int)( srect->h * (drect->h / (float)orig_dst.h) );
 }
 
+void
+dfb_clip_stretchblit( const DFBRegion *clip,
+                      DFBRectangle *srect, DFBRectangle *drect )
+{
+     dfb_clip_stretchblit_f( clip, srect, drect, false );
+}

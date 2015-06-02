@@ -997,7 +997,7 @@ IDirectFB_CreatePalette( IDirectFB                    *thiz,
 
      DIRECT_ALLOCATE_INTERFACE( iface, IDirectFBPalette );
 
-     ret = IDirectFBPalette_Construct( iface, palette );
+     ret = IDirectFBPalette_Construct( iface, palette, data->core );
 
      dfb_palette_unref( palette );
 

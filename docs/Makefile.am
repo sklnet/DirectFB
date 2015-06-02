@@ -34,6 +34,8 @@ endif
 
 
 EXTRA_DIST = \
+	DirectFB_Extensions_RLE_Image_Provider_Specs_and_Report.pdf \
+	README.rle		\
 	README.screenshots	\
 	dfbg.1.in		\
 	directfbrc.5.in		\

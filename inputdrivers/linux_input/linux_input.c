@@ -113,6 +113,9 @@ typedef unsigned long kernel_ulong_t;
 #ifdef LINUX_INPUT_USE_FBDEV
 #include <fbdev/fbdev.h>
 #endif
+#ifdef LINUX_INPUT_USE_STMFBDEV
+#include <stmfbdev/stmfbdev.h>
+#endif
 
 #include <core/input_driver.h>
 
@@ -1219,11 +1222,17 @@ driver_get_available( void )
      int   i;
      char *tsdev;
 
-#ifdef LINUX_INPUT_USE_FBDEV
-     if (dfb_system_type() != CORE_FBDEV)
+#if defined(LINUX_INPUT_USE_FBDEV) && defined(LINUX_INPUT_USE_STMFBDEV)
+     if (dfb_system_type() != CORE_FBDEV
+         && dfb_system_type() != CORE_STMFBDEV)
           return 0;
+#endif
+#if defined(LINUX_INPUT_USE_FBDEV)
+     if (dfb_system_type() != CORE_FBDEV)
+          goto next1;
 
-     FBDev *dfb_fbdev = (FBDev*) dfb_system_data();
+     {
+     const FBDev * const dfb_fbdev = (FBDev*) dfb_system_data();
      D_ASSERT( dfb_fbdev );
 
      // Only allow USB keyboard and mouse support if the systems driver has
@@ -1231,8 +1240,29 @@ driver_get_available( void )
      // FIXME:  Additional logic needed for system drivers not similar to fbdev?
      if (!dfb_fbdev->vt || dfb_fbdev->vt->fd < 0)
           return 0;
+     }
+     goto success;
 #endif
+next1:
+#if defined(LINUX_INPUT_USE_STMFBDEV)
+     if (dfb_system_type() != CORE_STMFBDEV)
+          goto next2;
 
+     {
+     const STMfbdev * const stmfb_dev = dfb_system_data();
+     D_ASSERT( stmfb_dev );
+
+     // Only allow USB keyboard and mouse support if the systems driver has
+     // the Virtual Terminal file ("/dev/tty0") open and available for use.
+     if (!stmfb_dev->vt || stmfb_dev->vt->fd < 0)
+          return 0;
+     }
+     goto success;
+#endif
+next2:
+     return 0;
+
+success:
      /* Use the devices specified in the configuration. */
      if (fusion_vector_has_elements( &dfb_config->linux_input_devices )) {
           const char *device;
@@ -1437,12 +1467,11 @@ get_capability( void )
      InputDriverCapability   capabilities = IDC_NONE;
 
 #ifdef LINUX_INPUT_USE_FBDEV
-     FBDev *dfb_fbdev;
-
      if (dfb_system_type() != CORE_FBDEV)
-          return 0;
+          goto next1;
 
-     dfb_fbdev = (FBDev*) dfb_system_data();
+     {
+     const FBDev * const dfb_fbdev = (FBDev*) dfb_system_data();
      D_ASSERT( dfb_fbdev );
 
      // Only allow USB keyboard and mouse support if the systems driver has
@@ -1450,7 +1479,32 @@ get_capability( void )
      // FIXME:  Additional logic needed for system drivers not similar to fbdev?
      if (!dfb_fbdev->vt || dfb_fbdev->vt->fd < 0)
           goto exit;
+     }
+     goto success;
 #endif
+next1:
+#ifdef LINUX_INPUT_USE_STMFBDEV
+     if (dfb_system_type() != CORE_STMFBDEV)
+          goto next2;
+
+     {
+     const STMfbdev * const stmfb_dev = dfb_system_data();
+     D_ASSERT( stmfb_dev );
+
+     // Only allow USB keyboard and mouse support if the systems driver has
+     // the Virtual Terminal file ("/dev/tty0") open and available for use.
+     // FIXME:  Additional logic needed for system drivers not similar to fbdev?
+     if (!stmfb_dev->vt || stmfb_dev->vt->fd < 0)
+          goto exit;
+     }
+     goto success;
+#endif
+next2:
+#if defined(LINUX_INPUT_USE_FBDEV) || defined(LINUX_INPUT_USE_STMFBDEV)
+     goto exit;
+#endif
+
+success:
 
      capabilities |= IDC_HOTPLUG;
 
@@ -1788,11 +1842,21 @@ driver_open_device( CoreInputDevice  *device,
       data->index = number;
 
      if (info->desc.min_keycode >= 0 && info->desc.max_keycode >= info->desc.min_keycode) {
-#ifdef LINUX_INPUT_USE_FBDEV
-          FBDev *dfb_fbdev = dfb_system_data();
+#if defined(LINUX_INPUT_USE_FBDEV)
+          if (dfb_system_type() == CORE_FBDEV) {
+               const FBDev * const dfb_fbdev = dfb_system_data();
 
-          if (dfb_fbdev->vt)
-               data->vt_fd = dup( dfb_fbdev->vt->fd );
+               if (dfb_fbdev->vt)
+                    data->vt_fd = dup( dfb_fbdev->vt->fd );
+          }
+#endif
+#if defined(LINUX_INPUT_USE_STMFBDEV)
+          if (dfb_system_type() == CORE_STMFBDEV) {
+               const STMfbdev * const stmfb_dev = dfb_system_data();
+
+               if (stmfb_dev->vt)
+                    data->vt_fd = dup( stmfb_dev->vt->fd );
+          }
 #endif
           if (data->vt_fd < 0)
                data->vt_fd = open( "/dev/tty0", O_RDWR | O_NOCTTY );
